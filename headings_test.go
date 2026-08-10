@@ -47,18 +47,44 @@ func TestAHeadingIsReadHoweverCommonMarkAllowsItToBeWritten(t *testing.T) {
 	t.Parallel()
 
 	for name, source := range map[string]string{
-		"closed ATX":      "## Changelog ##\n",
-		"one space":       " ## Changelog\n",
-		"three spaces":    "   ## Changelog\n",
-		"tab separator":   "##\tChangelog\n",
-		"byte-order mark": "\ufeff## Changelog\n",
-		"carriage return": "## Changelog\r\n",
-		"trailing space":  "## Changelog   \n",
-		"setext":          "Changelog\n=========\n",
-		"setext dashes":   "Recent Changes\n--------------\n",
-		"asciidoc":        "== Changelog\n",
+		"closed ATX":       "## Changelog ##\n",
+		"one space":        " ## Changelog\n",
+		"three spaces":     "   ## Changelog\n",
+		"tab separator":    "##\tChangelog\n",
+		"byte-order mark":  "\ufeff## Changelog\n",
+		"carriage return":  "## Changelog\r\n",
+		"trailing space":   "## Changelog   \n",
+		"setext":           "Changelog\n=========\n",
+		"setext dashes":    "Recent Changes\n--------------\n",
+		"keep a changelog": "## [Unreleased]\n",
 	} {
 		assert.Len(t, analyze(t, "README.md", source), 1, "%s is a heading", name)
+	}
+}
+
+// TestAMarkerRunHeadingIsReadInTheFamilyThatSpellsItThatWay pins the marker-run
+// form PER FAMILY, because the three formats do not agree on it and one pattern
+// serving all three was wrong in both directions. AsciiDoc titles are `==`, and
+// Asciidoctor also accepts markdown's `##`; markdown has only `##`, and a line
+// beginning `= ` there is prose; reStructuredText has no marker-run form at all
+// — its `#` is an adornment character, and reading a `#` line as a heading
+// invented sections in a format that has none.
+func TestAMarkerRunHeadingIsReadInTheFamilyThatSpellsItThatWay(t *testing.T) {
+	t.Parallel()
+
+	for name, spelling := range map[string]struct {
+		file, source string
+		want         int
+	}{
+		"asciidoc equals":      {"guide.adoc", "== Changelog\n", 1},
+		"asciidoc hash":        {"guide.adoc", "## Changelog\n", 1},
+		"markdown hash":        {"README.md", "## Changelog\n", 1},
+		"markdown equals":      {"README.md", "= Changelog\n", 0},
+		"restructured hash":    {"notes.rst", "## Changelog\n", 0},
+		"restructured equals":  {"notes.rst", "= Changelog\n", 0},
+		"restructured adorned": {"notes.rst", "Changelog\n=========\n", 1},
+	} {
+		assert.Len(t, analyze(t, spelling.file, spelling.source), spelling.want, "%s", name)
 	}
 }
 
@@ -140,4 +166,29 @@ func TestAnUnderlinedTitleIsStillAHeadingInAdornmentMarkup(t *testing.T) {
 
 	assert.Len(t, analyze(t, "guide.rst", "Changelog\n---------\n\n* 1.0\n"), 1)
 	assert.Len(t, analyze(t, "guide.adoc", "== Changelog\n\n* 1.0\n"), 1, "and the marker-run form still works")
+}
+
+// TestAMarkerRunHeadingIsReadBeforeItsUnderline pins the order the two written
+// forms are tried in. `# Changelog` followed by a run of equals signs is both a
+// marker-run heading and a line with an underline beneath it; read as the
+// second, the title is `# Changelog`, which matches no vocabulary and reports
+// nothing at all.
+func TestAMarkerRunHeadingIsReadBeforeItsUnderline(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "README.md", "# Changelog\n===========\n"), 1,
+		"the marker-run form wins, so the title is Changelog rather than # Changelog")
+}
+
+// TestTheReportedTitleKeepsItsBrackets pins what an author is shown. The Keep a
+// Changelog spelling arrives bracketed, and the vocabulary is matched without
+// them — but the message must name the text the author can search their
+// document for, not the stripped form nobody wrote.
+func TestTheReportedTitleKeepsItsBrackets(t *testing.T) {
+	t.Parallel()
+
+	diags := analyze(t, "README.md", "## [Unreleased]\n")
+
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, `"[Unreleased]"`)
 }

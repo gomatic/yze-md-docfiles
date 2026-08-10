@@ -7,7 +7,6 @@ package docfiles
 // for the rest of a file.
 
 import (
-	"regexp"
 	"strings"
 )
 
@@ -22,16 +21,6 @@ type scanner struct {
 	isAfterTitle  bool
 	isInDelimited bool
 }
-
-// delimiter is a reStructuredText or AsciiDoc block delimiter: a run of four or
-// more punctuation characters standing alone. `////` is AsciiDoc's block
-// COMMENT, which is a block like any other here — a heading a document has
-// deliberately commented out is not a section of it. The SAME line is a section
-// adornment when a title sits above it, which is why the scanner tracks whether
-// the previous line was blank — an AsciiDoc listing block and an underlined
-// heading are otherwise the same characters, and reading a listing block's
-// contents as sections reported the examples a document was showing.
-var delimiter = regexp.MustCompile(`^(-{4,}|={4,}|\.{4,}|\*{4,}|_{4,}|\+{4,}|~{4,}|/{4,})$`)
 
 // fence is an open fenced code block: the character that opened it and how many
 // of them there were.
@@ -63,8 +52,10 @@ func (s scanner) step(text line) (scanner, bool) {
 	}
 	// An indented line is never a section title in the adornment formats: their
 	// headings are flush-left, and an indented run is the literal block a
-	// document is quoting rather than a section it is opening.
-	return s, s.markup != adornmentMarkup || !isIndented(text)
+	// document is quoting rather than a section it is opening. In
+	// reStructuredText this is the ONLY block model — a literal block, a
+	// directive's body and a quoted example are all just indentation.
+	return s, !s.markup.usesAdornments() || !isIndented(text)
 }
 
 // stepBlock advances the block state, reporting whether this line belongs to a
@@ -94,7 +85,7 @@ func (s scanner) openBlock(trimmed string, isCode, isAfterTitle bool) (scanner, 
 	switch {
 	case s.markup == markdownMarkup && !isCode && opensComment(line(trimmed)):
 		s.isInComment = true
-	case s.markup == adornmentMarkup && !isCode && !isAfterTitle && delimiter.MatchString(trimmed):
+	case s.markup.usesDelimitedBlocks() && !isCode && !isAfterTitle && delimiter.MatchString(trimmed):
 		// The SAME run of dashes underlines a title above it and delimits a
 		// listing block after anything else, so a document showing a banned
 		// heading inside a block had its example reported as a section.
@@ -109,24 +100,20 @@ func (s scanner) openBlock(trimmed string, isCode, isAfterTitle bool) (scanner, 
 	return s, true
 }
 
-// isTitleCandidate reports a line that could be the title of an underlined
-// heading: something is written on it, and it is neither a block attribute nor
-// a run of delimiter characters itself.
-func isTitleCandidate(trimmed line) bool {
-	if trimmed == "" || strings.HasPrefix(string(trimmed), "[") {
-		return false
-	}
-	return !delimiter.MatchString(string(trimmed))
-}
-
 // closesAndStaysClosed reports whether a comment is still open after this line.
 // A line may close one and open another — `--> visible <!--` — so finding a
 // closer is not the end of the question; the opener half already knew that.
+//
+// The closer is looked for in the RAW line, deliberately unlike [opensComment].
+// Inside an HTML comment there are no code spans: a comment is raw text, and a
+// backtick in it is a backtick. Stripping spans here would let a `-->` written
+// inside one fail to close a comment that markdown really does end there.
 func closesAndStaysClosed(trimmed line) bool {
 	if !strings.Contains(string(trimmed), commentClose) {
 		return true
 	}
 	_, after, _ := strings.Cut(string(trimmed), commentClose)
+	// The remainder is prose again, so it is asked the prose question.
 	return opensComment(line(after))
 }
 
@@ -134,12 +121,73 @@ func closesAndStaysClosed(trimmed line) bool {
 // sit anywhere on the line — `text <!--` comments out everything after it — and
 // requiring it at the start left a heading on the next line reported as a
 // section of a document that had commented it away.
+//
+// Inline code spans are removed first. A backticked `<!--` is markdown SHOWING
+// the opener, not using it, and reading it as a real one gave any document that
+// explains markdown comments — this rule's own documentation among them — a
+// one-line, unlogged opt-out from every finding below it.
 func opensComment(trimmed line) bool {
-	open := strings.LastIndex(string(trimmed), commentOpen)
+	text := string(withoutCodeSpans(trimmed))
+	open := strings.LastIndex(text, commentOpen)
 	if open < 0 {
 		return false
 	}
-	return !strings.Contains(string(trimmed)[open:], commentClose)
+	return !strings.Contains(text[open:], commentClose)
+}
+
+// runLength is how many backticks stand together.
+type runLength int
+
+// offset is a position within a line, or [notFound].
+type offset int
+
+// notFound is the [offset] of something that is not there.
+const notFound offset = -1
+
+// withoutCodeSpans is the line with its inline code spans removed. Per
+// CommonMark a span runs from a backtick string to the next backtick string of
+// the same length; an unclosed run is literal text and is left as written.
+func withoutCodeSpans(text line) line {
+	var out strings.Builder
+	rest := string(text)
+	for {
+		start := strings.IndexByte(rest, '`')
+		if start < 0 {
+			_, _ = out.WriteString(rest)
+			return line(out.String())
+		}
+		open := backtickRun(line(rest[start:]))
+		closed := closingRun(line(rest[start+int(open):]), open)
+		if closed == notFound {
+			_, _ = out.WriteString(rest)
+			return line(out.String())
+		}
+		_, _ = out.WriteString(rest[:start])
+		rest = rest[start+int(open)+int(closed)+int(open):]
+	}
+}
+
+// backtickRun is the length of the backtick run beginning the text.
+func backtickRun(text line) runLength {
+	return runLength(len(text) - len(strings.TrimLeft(string(text), "`")))
+}
+
+// closingRun is the offset of the next backtick run of the same length, or
+// [notFound] when the span is left open.
+func closingRun(text line, length runLength) offset {
+	for at := 0; at < len(text); {
+		next := strings.IndexByte(string(text)[at:], '`')
+		if next < 0 {
+			return notFound
+		}
+		at += next
+		run := backtickRun(text[at:])
+		if run == length {
+			return offset(at)
+		}
+		at += int(run)
+	}
+	return notFound
 }
 
 // after is the fence's state once one line inside it has been read. A block

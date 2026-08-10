@@ -19,17 +19,21 @@ import (
 func TestDiscoveryClaimsOnlyProse(t *testing.T) {
 	dir := t.TempDir()
 	writeDoc(t, dir, "notes.md", banned)
-	writeDoc(t, dir, "notes.rst", banned)
+	// Each in the spelling ITS OWN family uses: reStructuredText has no
+	// marker-run heading, so writing `## Changelog` there proved the file was
+	// claimed only for as long as one pattern was wrongly shared by all three.
+	writeDoc(t, dir, "notes.rst", "Changelog\n=========\n")
 	writeDoc(t, dir, "UPPER.MD", banned)
-	writeDoc(t, dir, "guide.adoc", banned)
+	writeDoc(t, dir, "guide.adoc", "== Changelog\n")
 	writeDoc(t, dir, "guide.markdown", banned)
+	writeDoc(t, dir, "notes.txt", banned)
 	writeDoc(t, dir, "changelog.go", banned)
 	writeDoc(t, dir, "image.png", banned)
 	buf := swapStdout(t)
 
 	require.Equal(t, 0, run([]string{dir}))
 	out := buf.String()
-	for _, claimed := range []string{"notes.md", "notes.rst", "UPPER.MD", "guide.adoc", "guide.markdown"} {
+	for _, claimed := range []string{"notes.md", "notes.rst", "UPPER.MD", "guide.adoc", "guide.markdown", "notes.txt"} {
 		assert.Contains(t, out, claimed, "%s is prose", claimed)
 	}
 	assert.NotContains(t, out, "changelog.go", "code is not prose")
@@ -187,4 +191,20 @@ func TestDiscoverySkipsASymlinkToAFifo(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "README.md")
 	assert.NotContains(t, out, "link.md")
+}
+
+// TestAReportedPathIsCleaned pins the spelling an author is shown. A path
+// reaching the report with `..` still in it names a file correctly and reads as
+// a different one, and the same document named two ways used to be reported
+// twice.
+func TestAReportedPathIsCleaned(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o750))
+	writeDoc(t, dir, "CHANGELOG.md", banned)
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir + "/sub/../CHANGELOG.md"}))
+
+	assert.NotContains(t, buf.String(), "sub", "the path is cleaned before it is reported")
+	assert.Contains(t, buf.String(), "CHANGELOG.md")
 }

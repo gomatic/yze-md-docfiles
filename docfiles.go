@@ -27,7 +27,6 @@ package docfiles
 import (
 	"fmt"
 	"path"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -130,7 +129,14 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 		return nil, ErrNotText.With(nil, "path", string(at))
 	}
 	base, ext := nameAndExtension(at)
-	if isGenerated(source) {
+	// Stripped ONCE, here, so every reader below sees the same text. The
+	// heading scan stripped it and the generated-claim scan did not, so a
+	// generated file written with a byte order mark — which is how a Windows
+	// editor saves one — had its claim hidden behind an invisible character on
+	// exactly the line the claim has to be on.
+	family := markupOf(ext)
+	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
+	if isGenerated(text, family) {
 		// A generated document is out of scope ENTIRELY, file and sections
 		// alike. Exempting only the sections reported a machine-written
 		// CHANGELOG.md as a hand-maintained changelog — recommending generated
@@ -141,7 +147,7 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 	if !prose[ext] {
 		return diags, nil
 	}
-	headings, total := headingDiagnostics(at, source, markupOf(ext))
+	headings, total := headingDiagnostics(at, text, family)
 	diags = append(diags, headings...)
 	if total > findingLimit {
 		diags = append(diags, truncation(at, total))
@@ -165,51 +171,6 @@ func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
 		return nil
 	}
 	return []goyze.Diagnostic{diagnostic(at, 1, finding(fmt.Sprintf(fileMessage, base)))}
-}
-
-// generatedMarkers are the phrases a generator writes to say a file is its
-// output and not an author's. A document that is generated cannot be fixed by
-// editing it, so reporting one tells an author to change a file that will be
-// overwritten — the ratified rule is scoped to hand-maintained prose.
-//
-// The marker must be a GENERATOR'S claim of authorship, not merely a request
-// not to edit. A bare "DO NOT EDIT" was a one-line, audit-trail-free opt-out
-// from the whole rule — anyone could silence a hand-written changelog by typing
-// three words at the top of it — whereas "Code generated" and "@generated" are
-// the conventional statements a tool writes about its own output. A file that
-// merely invites manual additions is hand-maintained BY DESIGN, and exempting
-// those would have silently excused every finding this rule has in the fleet.
-var generatedClaim = regexp.MustCompile(`^\W*(?:Code generated .*DO NOT EDIT\.|@generated)\W*$`)
-
-// generatedHeader is how many leading lines are searched for a claim. A
-// generator writes its claim at the top, alone on a line; a document ABOUT the
-// convention QUOTES it inside a sentence, and searching for the words anywhere
-// in those lines exempted two real fleet documents that merely described the
-// rule — a standards page and a project record, both hand-written, both wholly
-// out of scope by accident.
-const generatedHeader = 5
-
-// isGenerated reports a document that declares itself a generator's output.
-func isGenerated(source Source) bool {
-	lines := strings.SplitN(string(source), "\n", generatedHeader+1)
-	for i, text := range lines {
-		if i == generatedHeader {
-			return false
-		}
-		if declaresGenerated(line(text)) {
-			return true
-		}
-	}
-	return false
-}
-
-// declaresGenerated reports one line that IS a generator's claim rather than
-// one that merely contains its words. The claim stands alone on its line, in
-// whatever comment syntax the format uses — the pattern's own non-word margins
-// consume the delimiters, so no separate stripping is needed — while a sentence
-// quoting it does not match at all.
-func declaresGenerated(text line) bool {
-	return generatedClaim.MatchString(strings.TrimSpace(string(text)))
 }
 
 // truncationMessage formats the finding that stands for the ones not reported.

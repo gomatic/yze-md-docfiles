@@ -19,6 +19,7 @@ import (
 var (
 	osExit                 = os.Exit
 	readFile               = func(path string) ([]byte, error) { return boundedRead(entryPath(path)) }
+	openFile               = func(path string) (io.ReadCloser, error) { return os.Open(path) }
 	statPath               = os.Stat
 	walkDir                = filepath.WalkDir
 	evalSymlinks           = filepath.EvalSymlinks

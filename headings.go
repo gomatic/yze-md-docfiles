@@ -40,12 +40,6 @@ var changelogTitle = regexp.MustCompile(
 	`^(?i)(change[-_ ]?log|recent changes|version history|release history|revision history|what'?s new|unreleased)$`,
 )
 
-// atxHeading is a heading written with a leading marker run: markdown's
-// `## Title`, and AsciiDoc's `== Title`. CommonMark allows up to three leading
-// spaces and an optional closing run of hashes, so `   ## Changelog ##` is a
-// heading and anchoring hard at the first column let both spellings through.
-var atxHeading = regexp.MustCompile(`^ {0,3}(?:#{1,6}|={1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$`)
-
 // setextUnderline is the second line of markdown's two-line heading, where the
 // title sits on the line ABOVE. Markdown recognises two adornment characters
 // here; reStructuredText recognises many more, which is what [adornmentUnderline]
@@ -57,48 +51,6 @@ var setextUnderline = regexp.MustCompile(`^ {0,3}(?:=+|-+)[ \t]*$`)
 // `Changelog` underlined with tildes or carets was invisible to a pattern that
 // only knew `=` and `-` — which is most of the RST headings anyone writes.
 var adornmentUnderline = regexp.MustCompile(`^ {0,3}(?:=+|-+|~+|\^+|"+|\++|#+|\*+|'+|` + "`+" + `|:+|\.+|_+)[ \t]*$`)
-
-// markup is the family a document is written in. It decides two things that
-// disagree between them: whether `~~~` opens a fenced code block (markdown) or
-// underlines a section title (reStructuredText), and which characters may
-// underline a title at all.
-type markup int
-
-const (
-	// markdownMarkup is markdown and everything read as it.
-	markdownMarkup markup = iota
-	// adornmentMarkup is reStructuredText and AsciiDoc, whose sections are
-	// underlined with repeated punctuation and which have no `~~~` fence.
-	adornmentMarkup
-)
-
-// adornmentExtensions are the prose extensions whose sections are underlined
-// with adornments rather than fenced with tildes.
-var adornmentExtensions = map[extension]bool{".rst": true, ".adoc": true}
-
-// markupOf is the family a document's extension puts it in.
-func markupOf(ext extension) markup {
-	if adornmentExtensions[ext] {
-		return adornmentMarkup
-	}
-	return markdownMarkup
-}
-
-// underlines reports a line that underlines the title above it.
-func (m markup) underlines(text line) bool {
-	if m == adornmentMarkup {
-		return adornmentUnderline.MatchString(string(text))
-	}
-	return setextUnderline.MatchString(string(text))
-}
-
-// fences reports whether this family spells a fenced code block with the given
-// marker. Only markdown does, and `~~~` in reStructuredText is a section
-// adornment — reading it as a fence silenced every heading in the rest of the
-// file, which is how a `Changelog` section under a tilde rule went unreported.
-func (m markup) fences(marker byte) bool {
-	return m == markdownMarkup && (marker == '`' || marker == '~')
-}
 
 // indentedCode is the indentation at which a line stops being markup and
 // becomes the literal contents of an indented code block: four spaces, or one
@@ -133,7 +85,10 @@ func headingDiagnostics(at Path, source Source, family markup) ([]goyze.Diagnost
 	var diags []goyze.Diagnostic
 	total := findingCount(0)
 	state := scanner{markup: family}
-	text := remaining(strings.TrimPrefix(string(source), byteOrderMark))
+	// The byte order mark is already gone: [Diagnostics] strips it once, for
+	// every reader, because two readers stripping it separately is how one of
+	// them came to forget.
+	text := remaining(source)
 	current, text, ok := nextLine(text)
 	for number := lineNumber(1); ok; number++ {
 		upcoming, tail, hasNext := nextLine(text)
@@ -192,9 +147,16 @@ func nextLine(text remaining) (line, remaining, bool) {
 // heading is the changelog title a line opens, if it opens one. Both written
 // forms are read: the marker-run heading, and the two-line form whose title
 // sits above its underline.
+//
+// The marker-run form is tried FIRST. `# Changelog` followed by a run of equals
+// signs is both — an ATX heading, and a line with an underline beneath it — and
+// reading it as the second yields the title `# Changelog`, which matches no
+// vocabulary and reports nothing.
 func heading(family markup, text, following line) (line, bool) {
-	if found := atxHeading.FindStringSubmatch(string(text)); found != nil {
-		return matched(line(found[1]))
+	if pattern, ok := family.heading(); ok {
+		if found := pattern.FindStringSubmatch(string(text)); found != nil {
+			return matched(line(found[1]))
+		}
 	}
 	if family.underlines(following) {
 		return matched(text)
@@ -212,7 +174,21 @@ func heading(family markup, text, following line) (line, bool) {
 // disagreed about the same words.
 func matched(title line) (line, bool) {
 	trimmed := line(strings.TrimSpace(string(title)))
-	return trimmed, changelogTitle.MatchString(string(trimmed))
+	return trimmed, changelogTitle.MatchString(string(unbracketed(trimmed)))
+}
+
+// unbracketed is a title with one surrounding pair of square brackets removed.
+//
+// `## [Unreleased]` is the Keep a Changelog spelling — the single most common
+// way the banned section is actually written — and the vocabulary admitted
+// `Unreleased` while the brackets it always arrives in made it no match. The
+// REPORTED title keeps its brackets, because that is what the author will search
+// their document for.
+func unbracketed(title line) line {
+	if len(title) < 2 || title[0] != '[' || title[len(title)-1] != ']' {
+		return title
+	}
+	return title[1 : len(title)-1]
 }
 
 // headingFinding is the message for one banned section. The title is quoted

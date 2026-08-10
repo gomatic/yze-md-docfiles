@@ -41,6 +41,16 @@ func FuzzDiagnostics(f *testing.F) {
 	}
 	f.Add("CHANGELOG.md", "")
 	f.Add("changelog.go", "## Changelog\n")
+	// The families disagree about what a heading is, so each is seeded in its
+	// own spelling and in the others' — a pattern shared between them was wrong
+	// in both directions and no markdown-only corpus could reach it.
+	f.Add("guide.adoc", "== Changelog\n")
+	f.Add("guide.adoc", ".A caption\n----\n== Changelog\n----\n")
+	f.Add("notes.rst", "=========\nChangelog\n=========\n")
+	f.Add("notes.rst", "Intro\n\n----\n\nChangelog\n=========\n")
+	f.Add("README.md", "## [Unreleased]\n")
+	f.Add("README.md", "Shown: `<!--` opener\n\n## Changelog\n")
+	f.Add("README.md", "- @generated\n\n## Changelog\n")
 
 	f.Fuzz(func(t *testing.T, path, source string) {
 		diags, err := docfiles.Diagnostics(docfiles.Path(path), docfiles.Source(source))
@@ -71,10 +81,20 @@ func FuzzDiagnostics(f *testing.F) {
 			if d.Line > len(lines) {
 				t.Fatalf("heading finding at line %d, past a %d-line document", d.Line, len(lines))
 			}
-			written := strings.TrimSpace(strings.TrimSuffix(lines[d.Line-1], "\r"))
-			if !strings.Contains(d.Message, strconv.Quote(written)) &&
-				!strings.Contains(written, strings.Trim(quoted(d.Message), `"`)) {
-				t.Fatalf("heading finding quotes %q, which is not line %d (%q)", d.Message, d.Line, written)
+			// ONE assertion, and an equality. This was a disjunction whose
+			// second half compared the message's title against the line the
+			// title had just been taken FROM — true whenever the first half was
+			// false, so any wrong title satisfied it and the property held for
+			// every input including the broken ones. The title is unquoted and
+			// must EQUAL the line it points at, stripped of the marker run that
+			// is not part of it.
+			title, unquoteErr := strconv.Unquote(quoted(d.Message))
+			if unquoteErr != nil {
+				t.Fatalf("heading finding must quote its title unambiguously, got %q", d.Message)
+			}
+			written := strings.TrimSuffix(lines[d.Line-1], "\r")
+			if bareTitle(written) != title {
+				t.Fatalf("heading finding names %q, but line %d is %q", title, d.Line, written)
 			}
 		}
 	})
@@ -85,4 +105,11 @@ func quoted(message string) string {
 	_, rest, _ := strings.Cut(message, `the `)
 	title, _, _ := strings.Cut(rest, ` section is a changelog`)
 	return title
+}
+
+// bareTitle is a heading line with its marker run removed — what the message
+// must name. Both written forms reduce to it: `## Changelog ##` and a
+// `Changelog` sitting above its underline are the same title.
+func bareTitle(written string) string {
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(written), "#="))
 }

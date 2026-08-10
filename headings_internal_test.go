@@ -48,3 +48,25 @@ func TestHeadingFindingQuotesATitleUnambiguously(t *testing.T) {
 	assert.Contains(t, message, `"Change\tLog"`, "the tab is escaped, not embedded raw")
 	require.NotContains(t, message, "Change\tLog", "and the raw form never reaches the message")
 }
+
+// TestUnbracketedRemovesOnlyASurroundingPair names the narrowness the doc
+// comment claims. Keep a Changelog writes `## [Unreleased]`, so the brackets
+// have to come off before the vocabulary is consulted — but only a matched
+// surrounding pair, or a title merely MENTIONING a bracket would be rewritten
+// into something its author never typed.
+func TestUnbracketedRemovesOnlyASurroundingPair(t *testing.T) {
+	t.Parallel()
+
+	for name, title := range map[string]struct{ in, want line }{
+		"surrounded":  {"[Unreleased]", "Unreleased"},
+		"open only":   {"[Unreleased", "[Unreleased"},
+		"close only":  {"Unreleased]", "Unreleased]"},
+		"inner":       {"see [1] here", "see [1] here"},
+		"bare":        {"Unreleased", "Unreleased"},
+		"empty":       {"", ""},
+		"one bracket": {"[", "["},
+		"empty pair":  {"[]", ""},
+	} {
+		assert.Equal(t, title.want, unbracketed(title.in), "%s", name)
+	}
+}

@@ -1,6 +1,8 @@
 package docfiles_test
 
 import (
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -132,4 +134,53 @@ func TestARunUnderTheLimitIsReportedInFull(t *testing.T) {
 	)
 
 	assert.Len(t, report.Diagnostics, 2)
+}
+
+// TestAnUnreadableDocumentIsOneFindingAndTheRunContinues pins the containment
+// AND its arithmetic. One file the gate cannot open must not empty the report,
+// must not produce two findings for one file, and must count toward the same
+// total every other finding does — three properties that were each true of a
+// different counter, and so of none of them together.
+func TestAnUnreadableDocumentIsOneFindingAndTheRunContinues(t *testing.T) {
+	t.Parallel()
+
+	report := docfiles.Report(func(path string) ([]byte, error) {
+		if path == "locked.md" {
+			return nil, os.ErrPermission
+		}
+		return []byte("## Changelog\n"), nil
+	}, []string{"locked.md", "good.md"})
+
+	require.Len(t, report.Diagnostics, 2, "one finding for the unreadable file, one for the readable one")
+	assert.Equal(t, "locked.md", report.Diagnostics[0].Path)
+	assert.Contains(t, report.Diagnostics[0].Message, "cannot be analyzed as a document")
+	assert.Equal(t, "good.md", report.Diagnostics[1].Path)
+}
+
+// TestAReadFailureCannotCrowdOutARealFinding pins the hole between the three
+// counters. Read failures were appended past the limit, the limit was measured
+// against a slice they had filled, and the truncation notice fired on a total
+// they never incremented — so a tree of unreadable files silently discarded a
+// real changelog and exited zero, which is the one outcome this file exists to
+// prevent.
+func TestAReadFailureCannotCrowdOutARealFinding(t *testing.T) {
+	t.Parallel()
+
+	files := make([]string, 0, 12_000)
+	for i := 0; i < 11_000; i++ {
+		files = append(files, fmt.Sprintf("locked-%d.md", i))
+	}
+	files = append(files, "CHANGELOG.md")
+
+	report := docfiles.Report(func(path string) ([]byte, error) {
+		if strings.HasPrefix(path, "locked-") {
+			return nil, os.ErrPermission
+		}
+		return []byte("## Changelog\n"), nil
+	}, files)
+
+	last := report.Diagnostics[len(report.Diagnostics)-1]
+	assert.Contains(t, last.Message, "onward are omitted", "the run says so rather than passing over it")
+	assert.NotEmpty(t, last.Path, "a diagnostic the runner cannot attribute is one it can only ignore")
+	assert.Contains(t, last.Message, "11002 changelog findings", "the true total, not the reported one")
 }

@@ -41,40 +41,68 @@ const reportLimit = 10_000
 
 // Report runs the changelog check over each document and aggregates the
 // diagnostics into the lean stickler-json report.
+// Every diagnostic a run produces passes through ONE counter, ONE limit and ONE
+// truncation notice. There were three, and they disagreed. Read failures were
+// appended with no limit at all; the limit was tested against the length of a
+// slice those failures had already filled; and the notice fired on a total they
+// never incremented. A tree holding ten thousand unreadable files and one real
+// changelog reported the ten thousand, dropped the changelog, announced
+// nothing, and exited zero — a finding lost in silence, which is the one
+// outcome this file exists to prevent.
 func Report(read FileReader, files []string) goyze.Report {
 	report := goyze.Report{}
 	total := findingCount(0)
+	truncatedAt := Path("")
 	for _, file := range files {
-		data, err := read(file)
-		if err != nil {
-			// Contained, exactly as an unreadable document is. A file the gate
-			// cannot open destroying every other file's findings is the same
-			// outage the not-text repair fixed, reached by another door — and
-			// the sibling analyzers already answer this way.
-			report.Diagnostics = append(report.Diagnostics, unreadable(Path(file), err))
+		found := fileFindings(read, Path(file))
+		total += findingCount(len(found))
+		if truncatedAt != "" {
+			// Past the limit the run keeps COUNTING but stops collecting, so
+			// the total it reports is the true one.
 			continue
 		}
-		found := documentDiagnostics(Path(file), Source(data))
-		total += findingCount(len(found))
-		if findingCount(len(report.Diagnostics)) < reportLimit {
-			report.Diagnostics = append(report.Diagnostics, found...)
+		room := reportLimit - findingCount(len(report.Diagnostics))
+		if findingCount(len(found)) > room {
+			report.Diagnostics = append(report.Diagnostics, found[:room]...)
+			truncatedAt = Path(file)
+			continue
 		}
+		report.Diagnostics = append(report.Diagnostics, found...)
 	}
-	if total > reportLimit {
-		report.Diagnostics = append(report.Diagnostics, runTruncation(total))
+	if truncatedAt != "" {
+		report.Diagnostics = append(report.Diagnostics, runTruncation(truncatedAt, total))
 	}
 	return report
 }
 
+// fileFindings is one file's diagnostics, whether it could be read or not.
+//
+// A file the gate cannot open becomes ONE finding against that file and the run
+// continues, exactly as an unparseable one does — a single blob mis-claimed by
+// discovery can never take every other file's findings down with it.
+func fileFindings(read FileReader, file Path) []goyze.Diagnostic {
+	data, err := read(string(file))
+	if err != nil {
+		return []goyze.Diagnostic{unreadable(file, err)}
+	}
+	return documentDiagnostics(file, Source(data))
+}
+
 // runTruncation is the finding that stands for everything past the run's limit,
 // carrying the true total so nothing is silently lost.
-func runTruncation(found findingCount) goyze.Diagnostic {
-	return diagnostic("", 1, finding(fmt.Sprintf(runTruncationMessage, found, reportLimit)))
+//
+// It is attributed to the FILE the run stopped collecting at, not to no file at
+// all. A diagnostic with an empty path is one the runner cannot attribute,
+// baseline or ratchet — the same objection that made an anonymous rule id
+// invalid — and this one has a truthful path available: the document whose
+// findings were the first to be dropped.
+func runTruncation(at Path, found findingCount) goyze.Diagnostic {
+	return diagnostic(at, 1, finding(fmt.Sprintf(runTruncationMessage, found, reportLimit, at)))
 }
 
 // runTruncationMessage formats the finding that stands for the rest of a run.
-const runTruncationMessage = "%d changelog findings across this run, of which %d are reported; a tree with this " +
-	"many is one problem rather than that many, and carrying them all costs more memory than reading it did"
+const runTruncationMessage = "%d changelog findings across this run, of which %d are reported; findings from %s " +
+	"onward are omitted, because a tree with this many is one problem rather than that many"
 
 // unreadable is the finding for a document the analyzer could not open at all.
 func unreadable(file Path, cause error) goyze.Diagnostic {

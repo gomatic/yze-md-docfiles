@@ -7,23 +7,35 @@ package main
 // file reached through the walk cost six megabytes.
 
 import (
-	"os"
+	"io"
 
 	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
-// boundedRead reads a document only when it is small enough to be prose.
+// boundedRead reads a document only as far as it could still be prose.
 //
-// The size comes from a stat, before the file is opened, so an oversize
-// document costs nothing to refuse — and it is still REPORTED, because a
-// document too large to analyze is exactly where an unchecked changelog hides.
+// The bound is on the READ, not on a size asked for beforehand. Asking first
+// answered a different question than the one that matters: it described the
+// path rather than the bytes, so a stat that did not follow a symlink reported
+// the link's own few bytes and read the two gigabytes behind it, and a file
+// that grew between the question and the answer was read at its new size. One
+// extra byte is read past the limit purely to tell "at the limit" from "over
+// it"; nothing larger is ever resident.
 func boundedRead(path entryPath) ([]byte, error) {
-	info, err := statPath(string(path))
+	file, err := openFile(string(path))
 	if err != nil {
 		return nil, err
 	}
-	if info.Size() > docfiles.SizeLimit {
-		return nil, docfiles.ErrTooLarge.With(nil, "path", string(path), "bytes", info.Size())
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, docfiles.SizeLimit+1))
+	if err != nil {
+		return nil, err
 	}
-	return os.ReadFile(string(path))
+	if len(data) > docfiles.SizeLimit {
+		// The true size is deliberately NOT reported: learning it means reading
+		// or stating the whole file, which is the cost this refusal exists to
+		// avoid. The limit is the actionable number.
+		return nil, docfiles.ErrTooLarge.With(nil, "path", string(path), "limit", docfiles.SizeLimit)
+	}
+	return data, nil
 }
