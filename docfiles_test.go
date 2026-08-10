@@ -59,10 +59,10 @@ func TestOnlyProseIsReadForSections(t *testing.T) {
 	assert.Len(t, analyze(t, "fixtures.md", embedded), 1, "the same text in prose is a section")
 }
 
-// TestGeneratedDocumentsAreExempt pins the ratified scope: the rule is about
+// TestGeneratedMarkersExemptADocument pins the ratified scope: the rule is about
 // HAND-MAINTAINED prose. A generated document cannot be fixed by editing it, so
 // reporting one tells an author to change a file that will be overwritten.
-func TestGeneratedDocumentsAreExempt(t *testing.T) {
+func TestGeneratedMarkersExemptADocument(t *testing.T) {
 	t.Parallel()
 
 	for _, marker := range []string{

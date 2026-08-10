@@ -58,7 +58,7 @@ func documents(args []string) ([]string, error) {
 	var files []string
 	seen := map[string]bool{}
 	for _, arg := range args {
-		found, err := expand(arg)
+		found, err := expand(argument(arg))
 		if err != nil {
 			return nil, err
 		}
@@ -80,8 +80,8 @@ func appendUnseen(files []string, seen map[string]bool, found []string) []string
 }
 
 // expand is one argument's documents.
-func expand(arg string) ([]string, error) {
-	info, err := statPath(arg)
+func expand(arg argument) ([]string, error) {
+	info, err := statPath(string(arg))
 	switch {
 	case err != nil:
 		return nil, err
@@ -91,11 +91,14 @@ func expand(arg string) ([]string, error) {
 		// Naming a FIFO or a device outright skips the walk's guard, and
 		// reading one hangs the gate rather than failing it. Refusing by name
 		// is loud; hanging is the one outcome nobody can diagnose.
-		return nil, docfiles.ErrNotRegularFile.With(nil, "path", arg)
+		return nil, docfiles.ErrNotRegularFile.With(nil, "path", string(arg))
 	}
-	return []string{arg}, nil
+	return []string{string(arg)}, nil
 }
 
 // searchDir is a directory argument expanded recursively to the documents it
 // contains.
 type searchDir string
+
+// argument is one path this command was asked to analyze.
+type argument string

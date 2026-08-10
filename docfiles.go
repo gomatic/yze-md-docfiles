@@ -148,7 +148,7 @@ func isGenerated(source Source) bool {
 		if i == generatedHeader {
 			return false
 		}
-		if declaresGenerated(text) {
+		if declaresGenerated(line(text)) {
 			return true
 		}
 	}
@@ -156,9 +156,9 @@ func isGenerated(source Source) bool {
 }
 
 // declaresGenerated reports one line carrying a generator's own claim.
-func declaresGenerated(text string) bool {
+func declaresGenerated(text line) bool {
 	for _, marker := range generatedMarkers {
-		if strings.Contains(text, marker) {
+		if strings.Contains(string(text), marker) {
 			return true
 		}
 	}

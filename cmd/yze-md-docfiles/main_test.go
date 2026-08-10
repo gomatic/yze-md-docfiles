@@ -60,10 +60,10 @@ func TestRunAcceptsExplicitFile(t *testing.T) {
 	assert.Contains(t, buf.String(), "hand-maintained changelog")
 }
 
-// TestOverlappingArgumentsReportEachDocumentOnce pins deduplication. Passing a
+// TestDocumentsAreDeduplicatedAcrossOverlappingArguments pins deduplication. Passing a
 // directory and a file inside it is ordinary, and reporting one document three
 // times tells its author there are three changelogs to delete.
-func TestOverlappingArgumentsReportEachDocumentOnce(t *testing.T) {
+func TestDocumentsAreDeduplicatedAcrossOverlappingArguments(t *testing.T) {
 	dir := t.TempDir()
 	file := writeDoc(t, dir, "sub/CHANGELOG.md", "")
 	buf := swapStdout(t)

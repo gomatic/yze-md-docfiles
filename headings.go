@@ -11,8 +11,14 @@ import (
 // line is one physical line of a document, without its terminator.
 type line string
 
-// lineNumber is a 1-based position in a document.
+// lineNumber is a 1-based position in a document, as a diagnostic reports it.
 type lineNumber int
+
+// lineIndex is a 0-based offset into a document's lines, as the scan walks
+// them. It is a separate type from [lineNumber] on purpose: the two differ by
+// one, and reading a document with the wrong one silently reports every finding
+// on its neighbour's line.
+type lineIndex int
 
 // byteOrderMark is the UTF-8 BOM some editors write. It precedes the first
 // character while being invisible in the text, so a heading check that does not
@@ -55,7 +61,7 @@ func headingDiagnostics(at Path, source Source) []goyze.Diagnostic {
 		if !isProse {
 			continue
 		}
-		if title, ok := heading(text, next(lines, i)); ok {
+		if title, ok := heading(text, next(lines, lineIndex(i))); ok {
 			diags = append(diags, diagnostic(at, lineNumber(i+1), headingFinding(title)))
 		}
 	}
@@ -76,9 +82,9 @@ func documentLines(source Source) []line {
 }
 
 // next is the line after i, or empty at the end of the document.
-func next(lines []line, i int) line {
-	if i+1 < len(lines) {
-		return lines[i+1]
+func next(lines []line, at lineIndex) line {
+	if int(at)+1 < len(lines) {
+		return lines[at+1]
 	}
 	return ""
 }
@@ -145,7 +151,7 @@ func (s scanner) step(text line) (scanner, bool) {
 	trimmed := strings.TrimSpace(string(text))
 	switch {
 	case s.open.isOpen:
-		s.open = s.open.after(trimmed)
+		s.open = s.open.after(line(trimmed))
 		return s, false
 	case s.isInComment:
 		s.isInComment = !strings.Contains(trimmed, commentClose)
@@ -154,7 +160,7 @@ func (s scanner) step(text line) (scanner, bool) {
 		s.isInComment = true
 		return s, false
 	}
-	if opened, ok := opening(trimmed); ok {
+	if opened, ok := opening(line(trimmed)); ok {
 		return scanner{open: opened}, false
 	}
 	return s, true
@@ -165,7 +171,7 @@ func (s scanner) step(text line) (scanner, bool) {
 // opened it and followed by nothing else — which is what makes a ```` block
 // survive the ``` fences it wraps, and an info string like ```go not close
 // anything.
-func (f fence) after(trimmed string) fence {
+func (f fence) after(trimmed line) fence {
 	closing, ok := opening(trimmed)
 	if ok && closing.marker == f.marker && closing.length >= f.length && closing.isBare {
 		return fence{}
@@ -174,19 +180,20 @@ func (f fence) after(trimmed string) fence {
 }
 
 // opening reads a line as a fence delimiter, reporting whether it is one.
-func opening(trimmed string) (fence, bool) {
-	if trimmed == "" || (trimmed[0] != '`' && trimmed[0] != '~') {
+func opening(trimmed line) (fence, bool) {
+	text := string(trimmed)
+	if text == "" || (text[0] != '`' && text[0] != '~') {
 		return fence{}, false
 	}
-	marker := trimmed[0]
-	length := len(trimmed) - len(strings.TrimLeft(trimmed, string(marker)))
+	marker := text[0]
+	length := len(text) - len(strings.TrimLeft(text, string(marker)))
 	if length < minimumFence {
 		return fence{}, false
 	}
 	return fence{
-		marker: marker,
 		length: length,
+		marker: marker,
 		isOpen: true,
-		isBare: strings.TrimSpace(trimmed[length:]) == "",
+		isBare: strings.TrimSpace(text[length:]) == "",
 	}, true
 }
