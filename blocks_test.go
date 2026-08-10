@@ -171,3 +171,55 @@ func TestAFenceNeedsThreeMarkers(t *testing.T) {
 	assert.Len(t, analyze(t, "README.md", "``code``\n\n## Changelog\n"), 1, "two open nothing either")
 	assert.Empty(t, analyze(t, "README.md", "```\n## Changelog\n"), "three do")
 }
+
+// TestAnIndentedDelimiterNeitherOpensNorClosesADelimitedBlock pins the
+// indentation rule on BOTH halves of the delimited pair. The fence pair already
+// had it on both; the delimited pair had it on neither, so an indented run
+// inside a listing block closed it early and reported the example the document
+// was showing, while an RST literal block opened a phantom one that silenced
+// the rest of the file.
+func TestAnIndentedDelimiterNeitherOpensNorClosesADelimitedBlock(t *testing.T) {
+	t.Parallel()
+
+	closedEarly := "= Doc\n\nExample:\n\n----\n        ----\n== Changelog\n----\n\nEnd.\n"
+	assert.Empty(t, analyze(t, "c.adoc", closedEarly), "an indented run does not close the block")
+
+	literal := "Guide\n=====\n\nA divider looks like this::\n\n    ----\n\nUnreleased\n~~~~~~~~~~\n\nstuff\n"
+	assert.Len(t, analyze(t, "j.rst", literal), 1, "and an indented run inside a literal block opens nothing")
+}
+
+// TestAnHtmlCommentIsAMarkdownConstruct pins the markup split on the comment
+// model, which had none. Four characters anywhere in an RST or AsciiDoc
+// document — formats with no HTML comments at all — silenced every finding
+// after them, needing no closing marker and leaving no trace.
+func TestAnHtmlCommentIsAMarkdownConstruct(t *testing.T) {
+	t.Parallel()
+
+	source := "Guide\n=====\n\nWritten <!-- like this --> and unterminated <!--\n\nUnreleased\n~~~~~~~~~~\n\n* 1.0\n"
+
+	assert.Len(t, analyze(t, "p.rst", source), 1, "reStructuredText has no HTML comments")
+	assert.Len(t, analyze(t, "p.adoc", source), 1, "and neither does AsciiDoc")
+}
+
+// TestACommentThatClosesAndReopensStaysOpen pins the closing half of the
+// comment model against the shape its opening half already handles: a line may
+// close one comment and open another, so finding a closer is not the end of the
+// question.
+func TestACommentThatClosesAndReopensStaysOpen(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "l.md", "Doc\n\n<!--\n## Changelog\n--> visible <!--\n## Changelog\n-->\n\nEnd\n"))
+	assert.Len(t, analyze(t, "l.md", "Doc\n\n<!--\nhidden\n--> visible\n\n## Changelog\n"), 1,
+		"and a comment that merely closes leaves the document readable")
+}
+
+// TestAnAsciiDocBlockCommentIsAnExample pins `////`, which is AsciiDoc's block
+// comment: a heading a document has deliberately commented out is not a section
+// of it.
+func TestAnAsciiDocBlockCommentIsAnExample(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "t.adoc", "= Guide\n\n////\nNote to self:\n== Changelog\nremove later\n////\n\nDone.\n"))
+	assert.Len(t, analyze(t, "t.adoc", "= Guide\n\n////\nnote\n////\n\n== Changelog\n"), 1,
+		"and the block closes, so a real section after it is read")
+}

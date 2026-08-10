@@ -24,12 +24,14 @@ type scanner struct {
 }
 
 // delimiter is a reStructuredText or AsciiDoc block delimiter: a run of four or
-// more punctuation characters standing alone. The SAME line is a section
+// more punctuation characters standing alone. `////` is AsciiDoc's block
+// COMMENT, which is a block like any other here — a heading a document has
+// deliberately commented out is not a section of it. The SAME line is a section
 // adornment when a title sits above it, which is why the scanner tracks whether
 // the previous line was blank — an AsciiDoc listing block and an underlined
 // heading are otherwise the same characters, and reading a listing block's
 // contents as sections reported the examples a document was showing.
-var delimiter = regexp.MustCompile(`^(-{4,}|={4,}|\.{4,}|\*{4,}|_{4,}|\+{4,}|~{4,})$`)
+var delimiter = regexp.MustCompile(`^(-{4,}|={4,}|\.{4,}|\*{4,}|_{4,}|\+{4,}|~{4,}|/{4,})$`)
 
 // fence is an open fenced code block: the character that opened it and how many
 // of them there were.
@@ -70,13 +72,18 @@ func (s scanner) step(text line) (scanner, bool) {
 func (s scanner) stepBlock(next scanner, trimmed string, isCode bool) (scanner, bool) {
 	switch {
 	case s.isInDelimited:
-		next.isInDelimited = !delimiter.MatchString(trimmed)
+		// An INDENTED delimiter does not close the block: AsciiDoc and RST
+		// require a delimiter at column zero, so an indented run is the
+		// literal content the block is showing. The fence pair already knew
+		// this; the delimited pair did not, and closing early reported the
+		// example a document was quoting.
+		next.isInDelimited = isCode || !delimiter.MatchString(trimmed)
 		return next, true
 	case s.open.isOpen:
 		next.open = s.open.after(line(trimmed), isCode)
 		return next, true
 	case s.isInComment:
-		next.isInComment = !strings.Contains(trimmed, commentClose)
+		next.isInComment = closesAndStaysClosed(line(trimmed))
 		return next, true
 	}
 	return next.openBlock(trimmed, isCode, s.isAfterTitle)
@@ -85,9 +92,9 @@ func (s scanner) stepBlock(next scanner, trimmed string, isCode bool) (scanner, 
 // openBlock enters whatever block this line opens, if it opens one.
 func (s scanner) openBlock(trimmed string, isCode, isAfterTitle bool) (scanner, bool) {
 	switch {
-	case !isCode && opensComment(line(trimmed)):
+	case s.markup == markdownMarkup && !isCode && opensComment(line(trimmed)):
 		s.isInComment = true
-	case s.markup == adornmentMarkup && !isAfterTitle && delimiter.MatchString(trimmed):
+	case s.markup == adornmentMarkup && !isCode && !isAfterTitle && delimiter.MatchString(trimmed):
 		// The SAME run of dashes underlines a title above it and delimits a
 		// listing block after anything else, so a document showing a banned
 		// heading inside a block had its example reported as a section.
@@ -110,6 +117,17 @@ func isTitleCandidate(trimmed line) bool {
 		return false
 	}
 	return !delimiter.MatchString(string(trimmed))
+}
+
+// closesAndStaysClosed reports whether a comment is still open after this line.
+// A line may close one and open another — `--> visible <!--` — so finding a
+// closer is not the end of the question; the opener half already knew that.
+func closesAndStaysClosed(trimmed line) bool {
+	if !strings.Contains(string(trimmed), commentClose) {
+		return true
+	}
+	_, after, _ := strings.Cut(string(trimmed), commentClose)
+	return opensComment(line(after))
 }
 
 // opensComment reports a line that leaves an HTML comment open. The opener may

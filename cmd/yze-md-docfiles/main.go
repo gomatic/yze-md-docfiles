@@ -18,11 +18,12 @@ import (
 // Injected collaborators, so the command is testable without real I/O.
 var (
 	osExit                 = os.Exit
-	readFile               = os.ReadFile
+	readFile               = func(path string) ([]byte, error) { return boundedRead(entryPath(path)) }
 	statPath               = os.Stat
 	walkDir                = filepath.WalkDir
 	evalSymlinks           = filepath.EvalSymlinks
 	lstatPath              = os.Lstat
+	absolutePath           = filepath.Abs
 	checkIgnore            = goyze.GitCheckIgnore
 	stdout       io.Writer = os.Stdout
 )
@@ -36,10 +37,9 @@ func run(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	report, err := docfiles.Report(readFile, files)
-	if err != nil {
-		return fail(err)
-	}
+	// Report cannot fail: an unreadable or unparseable document becomes a
+	// finding against that file rather than the run's error.
+	report := docfiles.Report(readFile, files)
 	if err := json.NewEncoder(stdout).Encode(report); err != nil {
 		return fail(err)
 	}
@@ -61,34 +61,58 @@ func fail(err error) int {
 // changelogs to delete.
 func documents(args []string) ([]string, error) {
 	var named, walked []string
-	seen := map[string]bool{}
+	// SEPARATE identity sets: sharing one let a directory argument claim a
+	// named document and hand it to the ignore filter, so the same arguments in
+	// the opposite order gave the opposite verdict.
+	isNamed, isWalked := map[string]bool{}, map[string]bool{}
 	for _, arg := range args {
 		found, isDir, err := expand(argument(arg))
 		if err != nil {
 			return nil, err
 		}
 		if isDir {
-			walked = appendUnseen(walked, seen, found)
+			walked = appendUnseen(walked, isWalked, found)
 			continue
 		}
 		// A document NAMED outright is analyzed verbatim. Passing it through
 		// the ignore filter answered a deliberate request with a silent clean
 		// pass — the filter keeps a WALK from claiming files the repository
 		// does not own; it does not overrule an author who asked.
-		named = appendUnseen(named, seen, found)
+		named = appendUnseen(named, isNamed, found)
 	}
-	return append(named, goyze.Tracked(checkIgnore, walked)...), nil
+	return append(named, goyze.Tracked(checkIgnore, without(isNamed, walked))...), nil
 }
 
 // canonical is the path with symlinks resolved, used ONLY as the identity of a
 // file. Keyed on the spelling, one document reached through a link and directly
 // was reported twice — one file, one changelog, two findings.
 func canonical(path entryPath) string {
-	resolved, err := evalSymlinks(string(path))
+	// ABSOLUTE FIRST, then resolved. EvalSymlinks resolves links without
+	// absolutising, so a relative spelling kept the working directory's own
+	// unresolved prefix while an absolute one did not — `CHANGELOG.md` and
+	// `$PWD/CHANGELOG.md` came out as two identities for one document, and it
+	// was reported twice. Absolutising afterwards does not fix that; the
+	// prefix has to be resolved too, which only happens if it is there first.
+	absolute, err := absolutePath(string(path))
 	if err != nil {
-		return string(path)
+		absolute = string(path)
+	}
+	resolved, err := evalSymlinks(absolute)
+	if err != nil {
+		return absolute
 	}
 	return resolved
+}
+
+// without drops the walked documents already claimed by name.
+func without(named map[string]bool, walked []string) []string {
+	kept := make([]string, 0, len(walked))
+	for _, file := range walked {
+		if !named[canonical(entryPath(file))] {
+			kept = append(kept, file)
+		}
+	}
+	return kept
 }
 
 // appendUnseen adds the documents not already collected, in the order they were

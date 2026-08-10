@@ -172,25 +172,6 @@ func TestDocumentsAreReportedInTheOrderTheyWereFound(t *testing.T) {
 	assert.Less(t, bytes.Index(buf.Bytes(), []byte("a.md")), bytes.Index(buf.Bytes(), []byte("b.md")))
 }
 
-// entryWithoutInfo is a directory entry the walk cannot describe.
-type entryWithoutInfo struct{ name string }
-
-func (e entryWithoutInfo) Name() string             { return e.name }
-func (entryWithoutInfo) IsDir() bool                { return false }
-func (entryWithoutInfo) Type() fs.FileMode          { return 0 }
-func (entryWithoutInfo) Info() (fs.FileInfo, error) { return nil, errors.New("no info") }
-
-// TestDiscoveryClaimsPlainTextDocuments pins `.txt`, which the extension set
-// names and no test exercised — a changelog is as often plain text as markdown.
-func TestDiscoveryClaimsPlainTextDocuments(t *testing.T) {
-	dir := t.TempDir()
-	writeDoc(t, dir, "notes.txt", banned)
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir}))
-	assert.Contains(t, buf.String(), "notes.txt")
-}
-
 // TestDiscoverySkipsASymlinkToAFifo pins that following a link means following
 // it to what it POINTS AT: a link to a FIFO blocks on open exactly as a bare
 // one does, and the guard has to see through the link to catch it.

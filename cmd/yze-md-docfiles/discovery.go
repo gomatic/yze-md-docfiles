@@ -7,8 +7,6 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
-
-	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
 // walkRoot is the directory a walk started from.
@@ -110,7 +108,7 @@ func nestedRepository(path entryPath) bool {
 // testing that silently skipped the file the author actually wrote.
 func readableSource(path entryPath, d fs.DirEntry) bool {
 	if d.Type().IsRegular() {
-		return withinSizeLimit(path, d)
+		return true
 	}
 	if d.Type()&fs.ModeSymlink == 0 {
 		return false
@@ -118,21 +116,7 @@ func readableSource(path entryPath, d fs.DirEntry) bool {
 	// A symlink is followed to what it POINTS AT: a link to a FIFO blocks
 	// exactly as a bare one does, and a link to a device never ends.
 	info, err := statPath(string(path))
-	return err == nil && info.Mode().IsRegular() && info.Size() <= docfiles.SizeLimit
-}
-
-// withinSizeLimit reports a file small enough to read as prose.
-//
-// The size is taken from the DIRECTORY ENTRY, before the file is opened. Asking
-// afterwards was no bound at all: a 2 GiB document cost 4.3 GB resident — its
-// own size to read and again to convert — before the limit that refused it was
-// ever consulted.
-func withinSizeLimit(path entryPath, d fs.DirEntry) bool {
-	info, err := d.Info()
-	if err != nil {
-		info, err = statPath(string(path))
-	}
-	return err != nil || info.Size() <= docfiles.SizeLimit
+	return err == nil && info.Mode().IsRegular()
 }
 
 // documentExtensions are the suffixes prose is written in.
@@ -146,8 +130,9 @@ var documentExtensions = map[string]bool{
 // thing this rule bans, and requiring an extension made it invisible to every
 // real invocation while the test suite advertised it as covered.
 var changelogStems = map[string]bool{
-	"changelog": true, "change-log": true, "change_log": true,
+	"changelog": true, "change-log": true, "change_log": true, "change log": true,
 	"changes": true, "releasenotes": true, "release-notes": true, "release_notes": true,
+	"release notes": true,
 }
 
 // isDocument reports a path this rule reads: prose by its extension, or a

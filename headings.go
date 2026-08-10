@@ -24,9 +24,12 @@ const byteOrderMark = "\ufeff"
 
 // changelogFileName is the file this rule bans, in the spellings it is written
 // in: CHANGELOG, ChangeLog, changelog, CHANGES, and the hyphenated and
-// underscored variants. The name must be the WHOLE stem — `changelog-policy.md`
-// is a document ABOUT the policy, which is a thing worth keeping.
-var changelogFileName = regexp.MustCompile(`^(change[-_]?log|changes|release[-_]?notes)$`)
+// underscored variants, and the spaced ones: `Release Notes.md` is the spelling
+// a person types, and the heading half already admitted the space while this
+// half did not — so the doc's own example of an unambiguous FILE name was the
+// one shape neither half caught. The name must be the WHOLE stem —
+// `changelog-policy.md` is a document ABOUT the policy, which is worth keeping.
+var changelogFileName = regexp.MustCompile(`^(change[-_ ]?log|changes|release[-_ ]?notes)$`)
 
 // changelogTitle is a heading that opens a changelog section. The alternatives
 // are spelled out rather than matched loosely, because "Change Process" is not
@@ -118,25 +121,56 @@ func isIndentedCode(text line) bool {
 	return len(string(text))-len(strings.TrimLeft(string(text), " ")) >= indentedCode
 }
 
-// headingDiagnostics reports every heading that opens a changelog section.
-func headingDiagnostics(at Path, source Source, family markup) []goyze.Diagnostic {
+// headingDiagnostics reports the headings that open a changelog section, and
+// how many there were.
+//
+// It stops COLLECTING at the limit rather than collecting everything and
+// truncating afterwards. Truncating afterwards bounded the report and not the
+// work: eight megabytes of legal prose, every line a banned heading, still
+// built every diagnostic — 524 MB resident — before discarding all but a
+// thousand of them, which is the cost the limit exists to avoid.
+func headingDiagnostics(at Path, source Source, family markup) ([]goyze.Diagnostic, findingCount) {
 	var diags []goyze.Diagnostic
+	total := findingCount(0)
 	state := scanner{markup: family}
 	text := remaining(strings.TrimPrefix(string(source), byteOrderMark))
 	current, text, ok := nextLine(text)
 	for number := lineNumber(1); ok; number++ {
 		upcoming, tail, hasNext := nextLine(text)
 		text = tail
-		var isProse bool
-		state, isProse = state.step(current)
-		if isProse {
-			if title, found := heading(family, current, upcoming); found {
-				diags = append(diags, diagnostic(at, number, headingFinding(title)))
-			}
+		var found bool
+		state, diags, found = state.read(at, family, current, upcoming, number, diags)
+		if found {
+			total++
 		}
 		current, ok = upcoming, hasNext
 	}
-	return diags
+	return diags, total
+}
+
+// read advances the scanner over one line and collects the finding it opens, if
+// any. It stops APPENDING at the limit while still reporting that it found one,
+// so the count stays true without the cost: collecting everything and
+// truncating afterwards bounded the report and not the work.
+func (s scanner) read(
+	at Path,
+	family markup,
+	current, upcoming line,
+	number lineNumber,
+	diags []goyze.Diagnostic,
+) (scanner, []goyze.Diagnostic, bool) {
+	next, isProse := s.step(current)
+	if !isProse {
+		return next, diags, false
+	}
+	title, found := heading(family, current, upcoming)
+	if !found {
+		return next, diags, false
+	}
+	if findingCount(len(diags)) < findingLimit {
+		diags = append(diags, diagnostic(at, number, headingFinding(title)))
+	}
+	return next, diags, true
 }
 
 // nextLine cuts the next line off text, normalising the carriage return a

@@ -95,16 +95,19 @@ func TestANamedNonRegularFileIsRefusedRatherThanRead(t *testing.T) {
 	assert.Equal(t, 1, run([]string{pipe}), "and the command reports the failure")
 }
 
-// TestRunFailsWhenReadErrors pins that a document the analyzer cannot read
-// aborts the run — the gate never passes over a file it did not see.
-func TestRunFailsWhenReadErrors(t *testing.T) {
+// TestRunReportsAnUnreadableDocumentWithoutFailingTheRun pins the containment
+// at the command's edge: the document becomes a finding of its own and the run
+// continues, so a single locked file cannot empty the report.
+func TestRunReportsAnUnreadableDocumentWithoutFailingTheRun(t *testing.T) {
 	dir := t.TempDir()
 	file := writeDoc(t, dir, "README.md", banned)
 	original := readFile
 	readFile = func(string) ([]byte, error) { return nil, errors.New("read failed") }
 	t.Cleanup(func() { readFile = original })
+	buf := swapStdout(t)
 
-	assert.Equal(t, 1, run([]string{file}))
+	require.Equal(t, 0, run([]string{file}))
+	assert.Contains(t, buf.String(), "cannot be analyzed as a document")
 }
 
 // failingWriter refuses every write, standing in for a closed pipe.
@@ -188,55 +191,6 @@ func TestResolvedRootFallsBackWhenASymlinkCannotBeResolved(t *testing.T) {
 		"the walk lstats that root and finds a symlink, which is exactly why resolving it matters")
 }
 
-// TestWithinSizeLimitRefusesBeforeOpening pins the bound that actually bounds.
-// Asking after the read was no bound at all — a 2 GiB document cost 4.3 GB
-// resident, its own size to read and again to convert, before the limit that
-// refused it was ever consulted. The size comes from the directory entry.
-func TestWithinSizeLimitRefusesBeforeOpening(t *testing.T) {
-	dir := t.TempDir()
-	writeDoc(t, dir, "small.md", banned)
-	huge := filepath.Join(dir, "huge.md")
-	require.NoError(t, os.WriteFile(huge, nil, 0o600))
-	require.NoError(t, os.Truncate(huge, docfiles.SizeLimit+1))
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir}))
-	out := buf.String()
-	assert.Contains(t, out, "small.md")
-	assert.NotContains(t, out, "huge.md", "never opened, so never read and never reported")
-}
-
-// TestWithinSizeLimitFallsBackToStat pins the arm taken when the walk cannot
-// describe an entry: the file is measured directly, and if it cannot be
-// measured at all it is READ rather than dropped in silence — a gate must not
-// skip a file because it could not size it.
-func TestWithinSizeLimitFallsBackToStat(t *testing.T) {
-	dir := t.TempDir()
-	small := writeDoc(t, dir, "notes.md", banned)
-
-	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
-		"measured by stat when the entry cannot describe itself")
-
-	original := statPath
-	statPath = func(string) (os.FileInfo, error) { return nil, errors.New("cannot stat") }
-	t.Cleanup(func() { statPath = original })
-
-	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
-		"and read rather than silently skipped when it cannot be measured at all")
-}
-
-// TestOneDocumentReachedTwoWaysIsReportedOnce pins that identity is the file.
-func TestOneDocumentReachedTwoWaysIsReportedOnce(t *testing.T) {
-	dir := t.TempDir()
-	target := writeDoc(t, dir, "real/CHANGELOG.md", "")
-	link := filepath.Join(dir, "link.md")
-	require.NoError(t, os.Symlink(target, link))
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{target, link}))
-	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")))
-}
-
 // TestANamedDocumentIsAnalyzedEvenWhenGitIgnoresIt pins the filter's scope: it
 // stops a WALK claiming files the repository does not own, and does not
 // overrule an author who asked about one outright.
@@ -269,4 +223,65 @@ func TestCanonicalFallsBackToTheSpelling(t *testing.T) {
 
 	require.Equal(t, 0, run([]string{file}))
 	assert.Contains(t, buf.String(), "CHANGELOG.md")
+}
+
+// TestOneDocumentReachedByTwoSpellingsIsReportedOnce pins that identity is the
+// FILE. EvalSymlinks resolves links without absolutising, so `CHANGELOG.md` and
+// `$PWD/CHANGELOG.md` were two identities for one document — and the symlink
+// half of the rule was pinned by nothing, because the link in the old test was
+// named `link.md`, which can never produce a file finding at all.
+func TestOneDocumentReachedByTwoSpellingsIsReportedOnce(t *testing.T) {
+	dir := t.TempDir()
+	target := writeDoc(t, dir, "CHANGELOG.md", "")
+	link := filepath.Join(dir, "CHANGELOG-link.md")
+	require.NoError(t, os.Symlink(target, link))
+
+	relative, err := filepath.Rel(dir, target)
+	require.NoError(t, err)
+	t.Chdir(dir)
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{target, relative, "./" + relative}))
+	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")),
+		"one file, however it is spelled")
+}
+
+// TestANamedDocumentIsNotFilteredWhateverTheArgumentOrder pins the rule against
+// the ordering that broke it: a directory listed first claimed the file, and
+// the ignore filter then deleted the author's explicit request.
+func TestANamedDocumentIsNotFilteredWhateverTheArgumentOrder(t *testing.T) {
+	dir := t.TempDir()
+	ignored := writeDoc(t, dir, "var/CHANGELOG.md", "")
+
+	original := checkIgnore
+	checkIgnore = func(goyze.RepoDir, []string) (map[string]bool, error) {
+		return map[string]bool{ignored: true}, nil
+	}
+	t.Cleanup(func() { checkIgnore = original })
+
+	for name, args := range map[string][]string{
+		"directory first": {filepath.Join(dir, "var"), ignored},
+		"named first":     {ignored, filepath.Join(dir, "var")},
+	} {
+		buf := swapStdout(t)
+		require.Equal(t, 0, run(args), name)
+		assert.Contains(t, buf.String(), "CHANGELOG.md", "%s: the author asked for it by name", name)
+	}
+}
+
+// TestCanonicalFallsBackWhenAPathCannotBeMadeAbsolute pins the first arm of
+// identity: a path the working directory makes unresolvable keeps its own
+// spelling, so the document is still analyzed rather than dropped for being
+// unidentifiable.
+func TestCanonicalFallsBackWhenAPathCannotBeMadeAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	file := writeDoc(t, dir, "CHANGELOG.md", "")
+
+	original := absolutePath
+	absolutePath = func(string) (string, error) { return "", os.ErrInvalid }
+	t.Cleanup(func() { absolutePath = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{file}))
+	assert.Contains(t, buf.String(), "CHANGELOG.md", "still analyzed, never dropped for being unidentifiable")
 }

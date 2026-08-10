@@ -115,7 +115,7 @@ type findingCount int
 // files in one walk reached 4.7 GB. No author needs the ten-thousandth
 // instance to act, and a document with this many is one problem, not ten
 // thousand.
-const findingLimit = 1000
+const findingLimit findingCount = 1000
 
 // Diagnostics reports the changelog findings for one document: the file itself
 // when its name is a changelog, and every heading that opens one.
@@ -138,11 +138,13 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 		return nil, nil
 	}
 	diags := fileDiagnostics(at, base, ext)
-	if prose[ext] {
-		diags = append(diags, headingDiagnostics(at, source, markupOf(ext))...)
+	if !prose[ext] {
+		return diags, nil
 	}
-	if len(diags) > findingLimit {
-		diags = append(diags[:findingLimit], truncation(at, findingCount(len(diags))))
+	headings, total := headingDiagnostics(at, source, markupOf(ext))
+	diags = append(diags, headings...)
+	if total > findingLimit {
+		diags = append(diags, truncation(at, total))
 	}
 	return diags, nil
 }
@@ -203,9 +205,11 @@ func isGenerated(source Source) bool {
 
 // declaresGenerated reports one line that IS a generator's claim rather than
 // one that merely contains its words. The claim stands alone on its line, in
-// whatever comment syntax the format uses; a sentence quoting it does not.
+// whatever comment syntax the format uses — the pattern's own non-word margins
+// consume the delimiters, so no separate stripping is needed — while a sentence
+// quoting it does not match at all.
 func declaresGenerated(text line) bool {
-	return generatedClaim.MatchString(strings.TrimSpace(strings.TrimSuffix(string(text), "-->")))
+	return generatedClaim.MatchString(strings.TrimSpace(string(text)))
 }
 
 // truncationMessage formats the finding that stands for the ones not reported.

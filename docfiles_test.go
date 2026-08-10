@@ -242,3 +242,18 @@ func TestTheSizeBoundIsExactAtItsEdge(t *testing.T) {
 	require.Error(t, err, "one byte over is not")
 	assert.ErrorIs(t, err, docfiles.ErrTooLarge)
 }
+
+// TestChangelogFileNameIsUnambiguousInEverySpelling pins the two halves of the vocabulary
+// against each other. The heading half admitted a space and the file half did
+// not, so `Release Notes.md` — the spelling a person actually types, and the
+// package doc's own example of a name that is unambiguous as a FILE — was the
+// one shape neither half caught.
+func TestChangelogFileNameIsUnambiguousInEverySpelling(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"Change Log.md", "Release Notes.md", "release notes.txt", "CHANGE LOG.md"} {
+		assert.Len(t, analyze(t, "docs/"+name, ""), 1, "%s is a changelog by name", name)
+	}
+
+	assert.Empty(t, analyze(t, "docs/changelog policy.md", ""), "and a document ABOUT one is still kept")
+}
