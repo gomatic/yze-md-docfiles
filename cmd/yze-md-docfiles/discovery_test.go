@@ -11,8 +11,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
 // TestDiscoveryClaimsOnlyProse pins which files a walk reads: the extensions a
@@ -144,35 +142,6 @@ func TestRunFailsWhenTheWalkCallbackErrors(t *testing.T) {
 	assert.Equal(t, 1, run([]string{t.TempDir()}))
 }
 
-// TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing pins that a deliberate request is
-// answered. The walk lstats its own root, so a symlink to a directory reported
-// itself as a non-directory and the walk yielded NOTHING — a silent clean pass,
-// which is the one result a gate must never invent.
-func TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing(t *testing.T) {
-	base := t.TempDir()
-	writeDoc(t, base, "tree/CHANGELOG.md", "")
-	link := filepath.Join(base, "linkdir")
-	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{link}))
-	assert.Contains(t, buf.String(), "CHANGELOG.md")
-}
-
-// TestResolvedRootKeepsAnOrdinaryPathAsGiven pins the other half: only a
-// SYMLINKED root is resolved. Resolving every root rewrote ordinary paths too —
-// on this platform a temp directory sits under a symlinked prefix — so one
-// document reached by two arguments was reported under two names.
-func TestResolvedRootKeepsAnOrdinaryPathAsGiven(t *testing.T) {
-	dir := t.TempDir()
-	file := writeDoc(t, dir, "CHANGELOG.md", "")
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir, file}))
-	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")),
-		"the walked path and the named path are the same document")
-}
-
 // TestEverySpellingOfOnePathIsOneDocument pins that deduplication normalises.
 // Keyed on the raw string, `a.md`, `./a.md` and `sub/../a.md` were three
 // documents, telling an author there were three changelogs to delete.
@@ -203,44 +172,6 @@ func TestDocumentsAreReportedInTheOrderTheyWereFound(t *testing.T) {
 	assert.Less(t, bytes.Index(buf.Bytes(), []byte("a.md")), bytes.Index(buf.Bytes(), []byte("b.md")))
 }
 
-// TestResolvedRootFallsBackWhenASymlinkCannotBeResolved pins the arm that keeps
-// an unresolvable root from becoming a crash or a silent pass: the walk
-// proceeds with the path as given, so whatever the walk itself can reach is
-// still reported rather than the whole argument being dropped.
-func TestResolvedRootFallsBackWhenASymlinkCannotBeResolved(t *testing.T) {
-	base := t.TempDir()
-	writeDoc(t, base, "tree/CHANGELOG.md", "")
-	link := filepath.Join(base, "linkdir")
-	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
-
-	original := evalSymlinks
-	evalSymlinks = func(string) (string, error) { return "", errors.New("cannot resolve") }
-	t.Cleanup(func() { evalSymlinks = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{link}), "an unresolvable root is walked as given, not abandoned")
-	assert.NotContains(t, buf.String(), "CHANGELOG.md",
-		"the walk lstats that root and finds a symlink, which is exactly why resolving it matters")
-}
-
-// TestWithinSizeLimitRefusesBeforeOpening pins the bound that actually bounds.
-// Asking after the read was no bound at all — a 2 GiB document cost 4.3 GB
-// resident, its own size to read and again to convert, before the limit that
-// refused it was ever consulted. The size comes from the directory entry.
-func TestWithinSizeLimitRefusesBeforeOpening(t *testing.T) {
-	dir := t.TempDir()
-	writeDoc(t, dir, "small.md", banned)
-	huge := filepath.Join(dir, "huge.md")
-	require.NoError(t, os.WriteFile(huge, nil, 0o600))
-	require.NoError(t, os.Truncate(huge, docfiles.SizeLimit+1))
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir}))
-	out := buf.String()
-	assert.Contains(t, out, "small.md")
-	assert.NotContains(t, out, "huge.md", "never opened, so never read and never reported")
-}
-
 // entryWithoutInfo is a directory entry the walk cannot describe.
 type entryWithoutInfo struct{ name string }
 
@@ -249,21 +180,30 @@ func (entryWithoutInfo) IsDir() bool                { return false }
 func (entryWithoutInfo) Type() fs.FileMode          { return 0 }
 func (entryWithoutInfo) Info() (fs.FileInfo, error) { return nil, errors.New("no info") }
 
-// TestWithinSizeLimitFallsBackToStat pins the arm taken when the walk cannot
-// describe an entry: the file is measured directly, and if it cannot be
-// measured at all it is READ rather than dropped in silence — a gate must not
-// skip a file because it could not size it.
-func TestWithinSizeLimitFallsBackToStat(t *testing.T) {
+// TestDiscoveryClaimsPlainTextDocuments pins `.txt`, which the extension set
+// names and no test exercised — a changelog is as often plain text as markdown.
+func TestDiscoveryClaimsPlainTextDocuments(t *testing.T) {
 	dir := t.TempDir()
-	small := writeDoc(t, dir, "notes.md", banned)
+	writeDoc(t, dir, "notes.txt", banned)
+	buf := swapStdout(t)
 
-	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
-		"measured by stat when the entry cannot describe itself")
+	require.Equal(t, 0, run([]string{dir}))
+	assert.Contains(t, buf.String(), "notes.txt")
+}
 
-	original := statPath
-	statPath = func(string) (os.FileInfo, error) { return nil, errors.New("cannot stat") }
-	t.Cleanup(func() { statPath = original })
+// TestDiscoverySkipsASymlinkToAFifo pins that following a link means following
+// it to what it POINTS AT: a link to a FIFO blocks on open exactly as a bare
+// one does, and the guard has to see through the link to catch it.
+func TestDiscoverySkipsASymlinkToAFifo(t *testing.T) {
+	dir := t.TempDir()
+	pipe := filepath.Join(dir, "pipe")
+	require.NoError(t, syscall.Mkfifo(pipe, 0o600))
+	require.NoError(t, os.Symlink(pipe, filepath.Join(dir, "link.md")))
+	writeDoc(t, dir, "README.md", banned)
+	buf := swapStdout(t)
 
-	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
-		"and read rather than silently skipped when it cannot be measured at all")
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+	assert.Contains(t, out, "README.md")
+	assert.NotContains(t, out, "link.md")
 }

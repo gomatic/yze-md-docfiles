@@ -58,59 +58,69 @@ func fail(err error) int {
 // and reporting one document three times tells its author there are three
 // changelogs to delete.
 func documents(args []string) ([]string, error) {
-	var files []string
+	var named, walked []string
 	seen := map[string]bool{}
 	for _, arg := range args {
-		found, err := expand(argument(arg))
+		found, isDir, err := expand(argument(arg))
 		if err != nil {
 			return nil, err
 		}
-		files = appendUnseen(files, seen, found)
+		if isDir {
+			walked = appendUnseen(walked, seen, found)
+			continue
+		}
+		// A document NAMED outright is analyzed verbatim. Passing it through
+		// the ignore filter answered a deliberate request with a silent clean
+		// pass — the filter keeps a WALK from claiming files the repository
+		// does not own; it does not overrule an author who asked.
+		named = appendUnseen(named, seen, found)
 	}
-	return tracked(checkIgnore, ignoreRoot(files), files), nil
+	return append(named, tracked(checkIgnore, walked)...), nil
+}
+
+// canonical is the path with symlinks resolved, used ONLY as the identity of a
+// file. Keyed on the spelling, one document reached through a link and directly
+// was reported twice — one file, one changelog, two findings.
+func canonical(path entryPath) string {
+	resolved, err := evalSymlinks(string(path))
+	if err != nil {
+		return string(path)
+	}
+	return resolved
 }
 
 // appendUnseen adds the documents not already collected, in the order they were
 // found.
 func appendUnseen(files []string, seen map[string]bool, found []string) []string {
 	for _, file := range found {
-		if !seen[file] {
-			seen[file] = true
+		identity := canonical(entryPath(file))
+		if !seen[identity] {
+			seen[identity] = true
 			files = append(files, file)
 		}
 	}
 	return files
 }
 
-// ignoreRoot is the directory the ignore question is asked from: the first
-// document's own directory, which is inside the repository being analyzed. A
-// run covers one repository — that is what a gate does — so one root answers
-// for every path in it.
-func ignoreRoot(files []string) repoDir {
-	if len(files) == 0 {
-		return "."
-	}
-	return repoDir(filepath.Dir(files[0]))
-}
-
 // expand is one argument's documents.
-func expand(arg argument) ([]string, error) {
+func expand(arg argument) ([]string, bool, error) {
 	info, err := statPath(string(arg))
 	switch {
 	case err != nil:
-		return nil, err
+		return nil, false, err
 	case info.IsDir():
-		return documentsUnder(searchDir(arg))
+		found, walkErr := documentsUnder(searchDir(arg))
+		return found, true, walkErr
 	case !info.Mode().IsRegular():
 		// Naming a FIFO or a device outright skips the walk's guard, and
 		// reading one hangs the gate rather than failing it. Refusing by name
 		// is loud; hanging is the one outcome nobody can diagnose.
-		return nil, docfiles.ErrNotRegularFile.With(nil, "path", string(arg))
+		return nil, false, docfiles.ErrNotRegularFile.With(nil, "path", string(arg))
 	}
 	// Cleaned, so `a.md`, `./a.md` and `sub/../a.md` are one document rather
 	// than three. Deduplication keyed on the raw string told an author there
 	// were three changelogs to delete when there was one.
-	return []string{filepath.Clean(string(arg))}, nil
+	return []string{filepath.Clean(string(arg))}, false, nil
 }
 
 // searchDir is a directory argument expanded recursively to the documents it

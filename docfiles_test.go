@@ -227,3 +227,18 @@ func TestADocumentUnderTheLimitIsReportedInFull(t *testing.T) {
 
 	assert.Len(t, analyze(t, "notes.md", strings.Repeat("## Changelog\n", 12)), 12)
 }
+
+// TestTheSizeBoundIsExactAtItsEdge pins the boundary itself. A limit is a
+// promise about one specific number, and nothing said which side of it the
+// limit falls on — so an off-by-one would have been invisible.
+func TestTheSizeBoundIsExactAtItsEdge(t *testing.T) {
+	t.Parallel()
+
+	atLimit := strings.Repeat("x", docfiles.SizeLimit)
+	_, err := docfiles.Diagnostics("edge.md", docfiles.Source(atLimit))
+	require.NoError(t, err, "a document exactly at the limit is read")
+
+	_, err = docfiles.Diagnostics("edge.md", docfiles.Source(atLimit+"x"))
+	require.Error(t, err, "one byte over is not")
+	assert.ErrorIs(t, err, docfiles.ErrTooLarge)
+}

@@ -115,6 +115,8 @@ func readableSource(path entryPath, d fs.DirEntry) bool {
 	if d.Type()&fs.ModeSymlink == 0 {
 		return false
 	}
+	// A symlink is followed to what it POINTS AT: a link to a FIFO blocks
+	// exactly as a bare one does, and a link to a device never ends.
 	info, err := statPath(string(path))
 	return err == nil && info.Mode().IsRegular() && info.Size() <= docfiles.SizeLimit
 }

@@ -137,3 +137,135 @@ func TestMainExits(t *testing.T) {
 
 	assert.Equal(t, 1, code)
 }
+
+// TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing pins that a deliberate request is
+// answered. The walk lstats its own root, so a symlink to a directory reported
+// itself as a non-directory and the walk yielded NOTHING — a silent clean pass,
+// which is the one result a gate must never invent.
+func TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing(t *testing.T) {
+	base := t.TempDir()
+	writeDoc(t, base, "tree/CHANGELOG.md", "")
+	link := filepath.Join(base, "linkdir")
+	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{link}))
+	assert.Contains(t, buf.String(), "CHANGELOG.md")
+}
+
+// TestResolvedRootKeepsAnOrdinaryPathAsGiven pins the other half: only a
+// SYMLINKED root is resolved. Resolving every root rewrote ordinary paths too —
+// on this platform a temp directory sits under a symlinked prefix — so one
+// document reached by two arguments was reported under two names.
+func TestResolvedRootKeepsAnOrdinaryPathAsGiven(t *testing.T) {
+	dir := t.TempDir()
+	file := writeDoc(t, dir, "CHANGELOG.md", "")
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir, file}))
+	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")),
+		"the walked path and the named path are the same document")
+}
+
+// TestResolvedRootFallsBackWhenASymlinkCannotBeResolved pins the arm that keeps
+// an unresolvable root from becoming a crash or a silent pass: the walk
+// proceeds with the path as given, so whatever the walk itself can reach is
+// still reported rather than the whole argument being dropped.
+func TestResolvedRootFallsBackWhenASymlinkCannotBeResolved(t *testing.T) {
+	base := t.TempDir()
+	writeDoc(t, base, "tree/CHANGELOG.md", "")
+	link := filepath.Join(base, "linkdir")
+	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
+
+	original := evalSymlinks
+	evalSymlinks = func(string) (string, error) { return "", errors.New("cannot resolve") }
+	t.Cleanup(func() { evalSymlinks = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{link}), "an unresolvable root is walked as given, not abandoned")
+	assert.NotContains(t, buf.String(), "CHANGELOG.md",
+		"the walk lstats that root and finds a symlink, which is exactly why resolving it matters")
+}
+
+// TestWithinSizeLimitRefusesBeforeOpening pins the bound that actually bounds.
+// Asking after the read was no bound at all — a 2 GiB document cost 4.3 GB
+// resident, its own size to read and again to convert, before the limit that
+// refused it was ever consulted. The size comes from the directory entry.
+func TestWithinSizeLimitRefusesBeforeOpening(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "small.md", banned)
+	huge := filepath.Join(dir, "huge.md")
+	require.NoError(t, os.WriteFile(huge, nil, 0o600))
+	require.NoError(t, os.Truncate(huge, docfiles.SizeLimit+1))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+	assert.Contains(t, out, "small.md")
+	assert.NotContains(t, out, "huge.md", "never opened, so never read and never reported")
+}
+
+// TestWithinSizeLimitFallsBackToStat pins the arm taken when the walk cannot
+// describe an entry: the file is measured directly, and if it cannot be
+// measured at all it is READ rather than dropped in silence — a gate must not
+// skip a file because it could not size it.
+func TestWithinSizeLimitFallsBackToStat(t *testing.T) {
+	dir := t.TempDir()
+	small := writeDoc(t, dir, "notes.md", banned)
+
+	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
+		"measured by stat when the entry cannot describe itself")
+
+	original := statPath
+	statPath = func(string) (os.FileInfo, error) { return nil, errors.New("cannot stat") }
+	t.Cleanup(func() { statPath = original })
+
+	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
+		"and read rather than silently skipped when it cannot be measured at all")
+}
+
+// TestOneDocumentReachedTwoWaysIsReportedOnce pins that identity is the file.
+func TestOneDocumentReachedTwoWaysIsReportedOnce(t *testing.T) {
+	dir := t.TempDir()
+	target := writeDoc(t, dir, "real/CHANGELOG.md", "")
+	link := filepath.Join(dir, "link.md")
+	require.NoError(t, os.Symlink(target, link))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{target, link}))
+	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")))
+}
+
+// TestANamedDocumentIsAnalyzedEvenWhenGitIgnoresIt pins the filter's scope: it
+// stops a WALK claiming files the repository does not own, and does not
+// overrule an author who asked about one outright.
+func TestANamedDocumentIsAnalyzedEvenWhenGitIgnoresIt(t *testing.T) {
+	dir := t.TempDir()
+	named := writeDoc(t, dir, "var/CHANGELOG.md", "")
+
+	original := checkIgnore
+	checkIgnore = func(repoDir, []string) (map[string]bool, error) {
+		return map[string]bool{named: true}, nil
+	}
+	t.Cleanup(func() { checkIgnore = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{named}))
+	assert.Contains(t, buf.String(), "CHANGELOG.md")
+}
+
+// TestCanonicalFallsBackToTheSpelling pins that a path which cannot be resolved
+// keeps its own spelling as its identity, so the document is still analyzed
+// rather than dropped for being unidentifiable.
+func TestCanonicalFallsBackToTheSpelling(t *testing.T) {
+	dir := t.TempDir()
+	file := writeDoc(t, dir, "CHANGELOG.md", "")
+
+	original := evalSymlinks
+	evalSymlinks = func(string) (string, error) { return "", errors.New("cannot resolve") }
+	t.Cleanup(func() { evalSymlinks = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{file}))
+	assert.Contains(t, buf.String(), "CHANGELOG.md")
+}
