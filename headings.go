@@ -181,19 +181,39 @@ func matched(title line) (line, bool) {
 // `[Unreleased](https://…/compare)` is the OTHER spelling Keep a Changelog
 // writes, and the vocabulary saw a title that was mostly a URL.
 func unlinked(title line) line {
-	text := string(title)
-	if !strings.HasSuffix(text, ")") {
-		return title
+	for _, form := range []linkForm{{opener: "](", closer: ")"}, {opener: "][", closer: "]"}} {
+		if label, isLink := linkLabel(title, form); isLink {
+			return label
+		}
 	}
-	label, rest, found := strings.Cut(text, "](")
-	if !found || !strings.HasPrefix(label, "[") {
-		return title
-	}
-	if strings.Contains(rest[:len(rest)-1], "](") {
-		return title
-	}
-	return line(label + "]")
+	return title
 }
+
+// linkLabel is the label of a title that is ENTIRELY one link, written with the
+// given target delimiters, reporting whether it is one.
+//
+// Both markdown link forms are read. `[Unreleased](…/compare)` and
+// `[Unreleased][unreleased]` render identically, and Keep a Changelog's own
+// template has used each — so admitting one and not the other left the same
+// heading reported or silent depending on which spelling its author copied.
+func linkLabel(text line, form linkForm) (line, bool) {
+	if !strings.HasSuffix(string(text), form.closer) {
+		return "", false
+	}
+	label, target, found := strings.Cut(string(text), form.opener)
+	if !found || !strings.HasPrefix(label, "[") {
+		return "", false
+	}
+	if strings.Contains(target[:len(target)-len(form.closer)], form.opener) {
+		// Two links in one heading is a sentence, not a title.
+		return "", false
+	}
+	return line(label + "]"), true
+}
+
+// linkForm is one of markdown's two ways of writing a link target: `](url)` for
+// an inline one, `][label]` for a reference.
+type linkForm struct{ opener, closer string }
 
 // unbracketed is a title with one surrounding pair of square brackets removed.
 //

@@ -122,102 +122,105 @@ func closesAndStaysClosed(trimmed line) bool {
 //
 // It is ONE scan rather than two questions, because the two disagreed. Asking
 // "is there an opener outside a code span?" and then "is there a closer?" on
-// DIFFERENT texts made `<!-- see `+"`"+`-->`+"`"+“ open a comment that never closed: the
-// closer was inside a code span, so the stripped text did not have it — while
-// the identical span on a CONTINUATION line did close the comment, because that
-// half reads the raw line. Three characters, an internal contradiction, and a
-// one-line opt-out from every finding below it.
+// DIFFERENT texts made `<!-- see ` + "`-->`" + “ open a comment that never
+// closed: the closer was inside a code span, so the stripped text did not have
+// it — while the identical span on a CONTINUATION line did close the comment,
+// because that half reads the raw line. Three characters, an internal
+// contradiction, and a one-line opt-out from every finding below it.
 //
 // Scanning once gets both right: outside a comment a code span hides an opener,
 // and once an opener is found everything after it is raw until a closer.
 func leavesCommentOpen(text line) bool {
 	raw := string(text)
+	spans := codeSpans(text)
 	for at := 0; at < len(raw); {
-		switch {
-		case raw[at] == '`':
-			at += int(codeSpanWidth(line(raw[at:])))
-		case strings.HasPrefix(raw[at:], commentOpen):
-			closed := strings.Index(raw[at:], commentClose)
-			if closed < 0 {
-				return true
-			}
-			at += closed + len(commentClose)
-		default:
-			at++
+		if width, isSpan := spans[at]; isSpan {
+			at += int(width)
+			continue
 		}
+		if !strings.HasPrefix(raw[at:], commentOpen) {
+			at++
+			continue
+		}
+		closed := strings.Index(raw[at:], commentClose)
+		if closed < 0 {
+			return true
+		}
+		at += closed + len(commentClose)
 	}
 	return false
 }
 
-// codeSpanWidth is how much of the text a backtick run and its span occupy. An
-// unclosed run is literal text, so only the run itself is consumed and scanning
-// carries on through what follows it.
-func codeSpanWidth(text line) width {
-	run := backtickRun(text)
-	closed := closingRun(text[int(run):], run)
-	if closed == notFound {
-		return width(run)
-	}
-	return width(int(run) + int(closed) + int(run))
-}
-
-// width is how many bytes of a line a construct occupies.
-type width int
-
-// runLength is how many backticks stand together.
-type runLength int
-
-// offset is a position within a line, or [notFound].
-type offset int
-
-// notFound is the [offset] of something that is not there.
-const notFound offset = -1
-
-// withoutCodeSpans is the line with its inline code spans removed. Per
-// CommonMark a span runs from a backtick string to the next backtick string of
-// the same length; an unclosed run is literal text and is left as written.
-func withoutCodeSpans(text line) line {
-	var out strings.Builder
-	rest := string(text)
-	for {
-		start := strings.IndexByte(rest, '`')
-		if start < 0 {
-			_, _ = out.WriteString(rest)
-			return line(out.String())
+// codeSpans is where each inline code span begins and how wide it is, computed
+// in ONE pass over the line.
+//
+// It used to be answered per position, by scanning forward for a matching
+// backtick run — which rescans the whole line for every run that never closes.
+// A line of runs of strictly increasing length closes none of them, so the cost
+// was superlinear in its length: eight megabytes of it, a size the limit
+// deliberately admits, took 27 seconds and reported nothing, and four such files
+// wedged the gate for two minutes.
+func codeSpans(text line) map[int]width {
+	runs := backtickRuns(text)
+	next := runsByLength(runs)
+	spans := map[int]width{}
+	for i := runIndex(0); int(i) < len(runs); i++ {
+		closer, isClosed := nextRunOfLength(next, runs, i)
+		if !isClosed {
+			// An unclosed run is literal text, and so is everything after it
+			// until some later run closes.
+			continue
 		}
-		open := backtickRun(line(rest[start:]))
-		closed := closingRun(line(rest[start+int(open):]), open)
-		if closed == notFound {
-			_, _ = out.WriteString(rest)
-			return line(out.String())
-		}
-		_, _ = out.WriteString(rest[:start])
-		rest = rest[start+int(open)+int(closed)+int(open):]
+		spans[runs[i].at] = width(runs[closer].at + int(runs[closer].length) - runs[i].at)
+		i = closer
 	}
+	return spans
 }
 
-// backtickRun is the length of the backtick run beginning the text.
-func backtickRun(text line) runLength {
-	return runLength(len(text) - len(strings.TrimLeft(string(text), "`")))
+// backtickRun is one run of backticks: where it starts and how long it is.
+type backtickRunAt struct {
+	at     int
+	length runLength
 }
 
-// closingRun is the offset of the next backtick run of the same length, or
-// [notFound] when the span is left open.
-func closingRun(text line, length runLength) offset {
+// backtickRuns is every backtick run in the line, left to right.
+func backtickRuns(text line) []backtickRunAt {
+	var runs []backtickRunAt
 	for at := 0; at < len(text); {
-		next := strings.IndexByte(string(text)[at:], '`')
-		if next < 0 {
-			return notFound
+		if text[at] != '`' {
+			at++
+			continue
 		}
-		at += next
 		run := backtickRun(text[at:])
-		if run == length {
-			return offset(at)
-		}
+		runs = append(runs, backtickRunAt{at: at, length: run})
 		at += int(run)
 	}
-	return notFound
+	return runs
 }
+
+// runsByLength indexes the runs by length, so finding the next one of a given
+// length is a step rather than a scan.
+func runsByLength(runs []backtickRunAt) map[runLength][]int {
+	byLength := map[runLength][]int{}
+	for i, run := range runs {
+		byLength[run.length] = append(byLength[run.length], i)
+	}
+	return byLength
+}
+
+// nextRunOfLength is the first run after i with the same length — the closer
+// CommonMark requires, which must match exactly.
+func nextRunOfLength(byLength map[runLength][]int, runs []backtickRunAt, opener runIndex) (runIndex, bool) {
+	for _, candidate := range byLength[runs[opener].length] {
+		if runIndex(candidate) > opener {
+			return runIndex(candidate), true
+		}
+	}
+	return 0, false
+}
+
+// runIndex is a position in the list of backtick runs on one line.
+type runIndex int
 
 // after is the fence's state once one line inside it has been read. A block
 // closes only on a run of ITS OWN marker, at least as long as the one that
@@ -249,4 +252,15 @@ func opening(trimmed line) (fence, bool) {
 		isOpen: true,
 		isBare: strings.TrimSpace(text[length:]) == "",
 	}, true
+}
+
+// width is how many bytes of a line a construct occupies.
+type width int
+
+// runLength is how many backticks stand together.
+type runLength int
+
+// backtickRun is the length of the backtick run beginning the text.
+func backtickRun(text line) runLength {
+	return runLength(len(text) - len(strings.TrimLeft(string(text), "`")))
 }

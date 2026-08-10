@@ -51,8 +51,18 @@ const (
 	asciidocMarkup
 )
 
-// markupExtensions are the prose extensions that are not read as markdown.
-var markupExtensions = map[extension]markup{".rst": restructuredMarkup, ".adoc": asciidocMarkup}
+// markupExtensions is the family each prose extension is read in. Every one is
+// named, including those read as markdown: an extension absent from a table is a
+// decision nobody wrote down, and this table decides whether a `~~~` fences a
+// block or underlines a heading.
+var markupExtensions = map[extension]markup{
+	markdownExt:      markdownMarkup,
+	markdownLongExt:  markdownMarkup,
+	plainTextExt:     markdownMarkup,
+	extensionlessExt: markdownMarkup,
+	restructuredExt:  restructuredMarkup,
+	asciidocExt:      asciidocMarkup,
+}
 
 // markupOf is the family a document's extension puts it in.
 func markupOf(ext extension) markup {

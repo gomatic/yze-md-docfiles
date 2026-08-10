@@ -1,9 +1,12 @@
 package docfiles
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestIsTitleCandidateRejectsEveryLineThatCannotBeATitle names the exclusions
@@ -36,41 +39,6 @@ func TestIsTitleCandidateRejectsEveryLineThatCannotBeATitle(t *testing.T) {
 	}
 }
 
-// TestWithoutCodeSpansRemovesOnlyClosedSpans names the CommonMark rule the doc
-// comment states: a span closes on a backtick run of the same length, and a run
-// that never closes is literal text. Getting the second half wrong would make
-// every line holding one stray backtick disappear.
-func TestWithoutCodeSpansRemovesOnlyClosedSpans(t *testing.T) {
-	t.Parallel()
-
-	for name, span := range map[string]struct{ in, want line }{
-		"single":        {"a `code` b", "a  b"},
-		"double":        {"a ``co`de`` b", "a  b"},
-		"unclosed":      {"a ` b <!--", "a ` b <!--"},
-		"uneven closer": {"a ``code` b", "a ``code` b"},
-		"two spans":     {"`x` and `y`", " and "},
-		"none":          {"plain text", "plain text"},
-		"empty":         {"", ""},
-	} {
-		assert.Equal(t, span.want, withoutCodeSpans(span.in), "%s", name)
-	}
-}
-
-// TestClosingRunReportsNotFoundForAnUnclosedSpan names the sentinel the doc
-// comment promises. A span left open must be reported as absent rather than as
-// an offset, because an offset would slice past the text it came from.
-//
-// The text given is what FOLLOWS the opening run, which is how withoutCodeSpans
-// calls it — the offset returned is relative to that, not to the whole line.
-func TestClosingRunReportsNotFoundForAnUnclosedSpan(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, notFound, closingRun(" never closed", 1))
-	assert.Equal(t, notFound, closingRun(" only one ` here", 2), "a shorter run does not close a longer one")
-	assert.Equal(t, offset(4), closingRun("code` rest", 1))
-	assert.Equal(t, offset(4), closingRun("code`` rest", 2), "a run of the same length closes it")
-}
-
 // TestLeavesCommentOpenReadsTheLineOnce names the scan and the contradiction it
 // replaced. Two separate questions — "is there an opener outside a code span?"
 // and "is there a closer?" — were asked of DIFFERENT texts, so a comment opened
@@ -94,4 +62,67 @@ func TestLeavesCommentOpenReadsTheLineOnce(t *testing.T) {
 	} {
 		assert.Equal(t, text.open, leavesCommentOpen(text.in), "%s", name)
 	}
+}
+
+// TestCodeSpansFindsEveryClosedSpanAndNoOpenOne names nextRunOfLength and pins
+// the CommonMark rule that
+// makes hiding a comment opener safe: a span closes on a backtick run of exactly
+// the same length, and a run that never closes is literal text.
+func TestCodeSpansFindsEveryClosedSpanAndNoOpenOne(t *testing.T) {
+	t.Parallel()
+
+	for name, span := range map[string]struct {
+		spans map[int]width
+		text  string
+	}{
+		"single":        {map[int]width{2: 6}, "a `code` b"},
+		"double":        {map[int]width{2: 9}, "a ``co`de`` b"},
+		"unclosed":      {map[int]width{}, "a ` b"},
+		"uneven closer": {map[int]width{}, "a ``code` b"},
+		"two spans":     {map[int]width{0: 3, 4: 3}, "`x` `y`"},
+		"none":          {map[int]width{}, "plain"},
+		"empty":         {map[int]width{}, ""},
+	} {
+		assert.Equal(t, span.spans, codeSpans(line(span.text)), "%s", name)
+	}
+}
+
+// TestCodeSpansIsLinearInTheLineLength pins the COST, not just the answer. The
+// spans used to be answered per position by scanning forward for a matching run,
+// which rescans the whole line for every run that never closes — so a line of
+// runs of strictly increasing length, which closes none of them, was superlinear:
+// eight megabytes of it, a size the limit deliberately admits, took 27 seconds
+// and reported nothing.
+func TestCodeSpansIsLinearInTheLineLength(t *testing.T) {
+	t.Parallel()
+	var builder strings.Builder
+	for run := 1; builder.Len() < 1<<20; run++ {
+		_, _ = builder.WriteString(strings.Repeat("`", run) + "x")
+	}
+	hostile := line(builder.String())
+
+	done := make(chan bool, 1)
+	go func() { done <- leavesCommentOpen(hostile) }()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scanning one line did not finish")
+	}
+}
+
+// TestNextRunOfLengthMatchesOnlyAnExactLength pins the CommonMark rule directly:
+// a span closes on a backtick string of EXACTLY the same length, so a longer or
+// shorter run is not a closer and the span stays open.
+func TestNextRunOfLengthMatchesOnlyAnExactLength(t *testing.T) {
+	t.Parallel()
+	runs := backtickRuns(line("`a``b`c```"))
+	byLength := runsByLength(runs)
+
+	closer, isClosed := nextRunOfLength(byLength, runs, 0)
+	require.True(t, isClosed, "the one-backtick run closes on the next one-backtick run")
+	assert.Equal(t, runIndex(2), closer, "skipping the two-backtick run between them")
+
+	_, isTwoClosed := nextRunOfLength(byLength, runs, 1)
+	assert.False(t, isTwoClosed, "and the two-backtick run finds no two-backtick closer")
 }

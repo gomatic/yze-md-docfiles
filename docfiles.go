@@ -34,10 +34,12 @@ import (
 	goyze "github.com/gomatic/go-yze"
 )
 
-// ErrTooLarge reports a document past the size this rule will read. Prose is
-// not megabytes; a file that big is generated output, a data dump, or a mistake,
-// and reading it costs its own size in memory for a rule that cannot apply.
-const ErrTooLarge errs.Const = "document is too large to analyze as prose"
+// ErrTooLarge reports a file past the size this rule will read. It IS the shared
+// sentinel, not a second one beside it: the bound is enforced in two places —
+// here, and at the one place the command reads a file — and two sentinels for
+// one condition meant `errors.Is` answered false for whichever layer the caller
+// had not thought of.
+const ErrTooLarge = goyze.ErrTooLarge
 
 // SizeLimit is the largest document read, in bytes. It is exported so the
 // command can refuse a file from its directory entry, BEFORE opening it —
@@ -89,16 +91,27 @@ const headingMessage = "the %q section is a changelog inside another document; "
 // The empty extension is here for the canonical Unix spelling, a bare
 // `CHANGELOG` with no extension at all.
 var prose = map[extension]bool{
-	"":          true,
-	".md":       true,
-	".markdown": true,
-	".txt":      true,
-	".rst":      true,
-	".adoc":     true,
+	extensionlessExt: true,
+	markdownExt:      true,
+	markdownLongExt:  true,
+	plainTextExt:     true,
+	restructuredExt:  true,
+	asciidocExt:      true,
 }
 
 // extension is a file's suffix, lower-cased.
 type extension string
+
+// The prose extensions this rule reads, named once so the three places that
+// decide something per-format stay in step.
+const (
+	markdownExt      extension = ".md"
+	markdownLongExt  extension = ".markdown"
+	plainTextExt     extension = ".txt"
+	restructuredExt  extension = ".rst"
+	asciidocExt      extension = ".adoc"
+	extensionlessExt extension = ""
+)
 
 // baseName is a file's final path element.
 type baseName string
@@ -146,7 +159,7 @@ func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCoun
 	// exactly the line the claim has to be on.
 	family := markupOf(ext)
 	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
-	if isGenerated(text, family) {
+	if isGenerated(text, family, ext) {
 		// A generated document is out of scope ENTIRELY, file and sections
 		// alike. Exempting only the sections reported a machine-written
 		// CHANGELOG.md as a hand-maintained changelog — recommending generated

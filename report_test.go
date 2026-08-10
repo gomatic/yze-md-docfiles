@@ -184,3 +184,28 @@ func TestAReadFailureCannotCrowdOutARealFinding(t *testing.T) {
 	assert.NotEmpty(t, last.Path, "a diagnostic the runner cannot attribute is one it can only ignore")
 	assert.Contains(t, last.Message, "11002 changelog findings", "the true total, not the reported one")
 }
+
+// TestTheRunTruncationNamesTheFirstFileItDropped pins the attribution, which
+// nothing verified: removing the guard that stops collecting moved the notice
+// from the FIRST dropped document to the last, and the sentence it carries —
+// "findings from X onward are omitted" — became false for every document
+// between them.
+func TestTheRunTruncationNamesTheFirstFileItDropped(t *testing.T) {
+	t.Parallel()
+	crowded := strings.Repeat("## Changelog\n\n", 1200)
+	files := make([]string, 0, 14)
+	contents := map[string]string{}
+	for i := range 14 {
+		name := fmt.Sprintf("d%02d.md", i)
+		files = append(files, name)
+		contents[name] = crowded
+	}
+
+	report := docfiles.Report(reader(contents), files)
+
+	last := report.Diagnostics[len(report.Diagnostics)-1]
+	assert.Contains(t, last.Message, "onward are omitted")
+	assert.Equal(t, "d09.md", last.Path, "the FIRST document whose findings were dropped, not the last")
+	assert.Contains(t, last.Message, "d09.md")
+	assert.Contains(t, last.Message, "16800 changelog findings", "and the true total across the run")
+}
