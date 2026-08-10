@@ -22,16 +22,42 @@ import (
 // the conventional statements a tool writes about its own output. A file that
 // merely invites manual additions is hand-maintained BY DESIGN, and exempting
 // those would have silently excused every finding this rule has in the fleet.
-// The margins are the COMMENT DELIMITERS these formats actually use, named one
-// by one. They were once `\W*`, chosen to consume a delimiter of any shape —
-// and `\W` is every non-word character, which is also markdown's list markers,
-// its blockquote marker and its backticks. `- @generated` in a list of the
-// conventional markers, `> @generated` in a quotation, or the claim inside a
-// code span exempted the whole document, file finding included: the same
-// one-line, audit-trail-free opt-out this pattern was tightened to close, and a
-// document explaining the convention still silenced itself.
+// The margin is a COMMENT DELIMITER one of these formats actually has, and it is
+// REQUIRED. It was once `\W*` — every non-word character, which is markdown's
+// list markers, its blockquote marker and its backticks — and then an optional
+// group including `#` and `;`, which are not comment delimiters in any of the
+// five prose formats this rule reads. Each round left the same hole: a bare
+// `@generated`, or `# @generated`, is VISIBLE BODY TEXT that a reader sees, and
+// typing it at the top of a hand-written changelog silenced the whole document,
+// file finding included. That is the one-line, audit-trail-free opt-out this
+// pattern exists to close, reintroduced twice by the pattern itself.
+//
+// A generator writing a MULTI-LINE header states the claim inside the comment
+// rather than beside a delimiter, so [bareClaim] answers for a line the scanner
+// says is already within one.
 var generatedClaim = regexp.MustCompile(
-	`^(?:<!--|//+|#+|/\*|;+|\.\.)?[ \t]*(?:Code generated .*DO NOT EDIT\.|@generated)[ \t]*(?:-->|\*/)?$`,
+	`^(?:<!--|//+|/\*|\.\.)[ \t]*(?:` + claimWords + `)[ \t]*(?:-->|\*/)?$`,
+)
+
+// bareClaim is the same words with NO delimiter, which is only a claim when the
+// line is already INSIDE a comment.
+var bareClaim = regexp.MustCompile(`^(?:` + claimWords + `)$`)
+
+// claimWords are the two conventional statements a generator makes about its own
+// output.
+const claimWords = `Code generated .*DO NOT EDIT\.|@generated`
+
+// claimSite is where in the document a candidate claim sits, which decides
+// whether it needs a comment delimiter of its own.
+type claimSite int
+
+const (
+	// inProse is a line the document renders, where a claim must carry a
+	// comment delimiter or it is text a reader sees.
+	inProse claimSite = iota
+	// insideComment is a line already within one, where the delimiters are on
+	// the lines above and below it.
+	insideComment
 )
 
 // generatedHeader is how many leading lines are searched for a claim. A
@@ -41,6 +67,20 @@ var generatedClaim = regexp.MustCompile(
 // rule — a standards page and a project record, both hand-written, both wholly
 // out of scope by accident.
 const generatedHeader = 5
+
+// claimSiteOf says whether a line may carry a claim at all, and where it sits. A
+// line inside a fenced block is SHOWING a generated header rather than making
+// one, and exempted a whole document that merely demonstrated the convention.
+func claimSiteOf(state lineState) (claimSite, bool) {
+	if state.isInComment {
+		return insideComment, true
+	}
+	return inProse, state.isProse
+}
+
+// lineState is what the block scanner says about one line of the header: whether
+// the document renders it, and whether it sits inside a comment.
+type lineState struct{ isProse, isInComment bool }
 
 // isGenerated reports a document that declares itself a generator's output.
 //
@@ -59,8 +99,11 @@ func isGenerated(source Source, family markup) bool {
 			return false
 		}
 		text = tail
+		was := state
 		var isProse bool
-		if state, isProse = state.step(current); isProse && declaresGenerated(current) {
+		state, isProse = state.step(current)
+		where, eligible := claimSiteOf(lineState{isProse: isProse, isInComment: was.isInComment})
+		if eligible && declaresGenerated(current, where) {
 			return true
 		}
 	}
@@ -72,6 +115,14 @@ func isGenerated(source Source, family markup) bool {
 // whatever comment syntax the format uses — the pattern's own non-word margins
 // consume the delimiters, so no separate stripping is needed — while a sentence
 // quoting it does not match at all.
-func declaresGenerated(text line) bool {
-	return generatedClaim.MatchString(strings.TrimSpace(string(text)))
+func declaresGenerated(text line, where claimSite) bool {
+	trimmed := strings.TrimSpace(string(text))
+	if where == insideComment {
+		// Already inside a comment, so no delimiter is expected on this line —
+		// the conventional multi-line generated header puts the claim on a line
+		// of its own between `<!--` and `-->`, and requiring a delimiter there
+		// reported a genuinely generated document as hand-maintained.
+		return bareClaim.MatchString(trimmed)
+	}
+	return generatedClaim.MatchString(trimmed)
 }

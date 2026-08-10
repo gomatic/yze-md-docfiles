@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -61,22 +62,55 @@ func TestRunAcceptsExplicitFile(t *testing.T) {
 	assert.Contains(t, buf.String(), "hand-maintained changelog")
 }
 
-// TestDocumentsAreDeduplicatedAcrossOverlappingArguments pins deduplication. Passing a
-// directory and a file inside it is ordinary, and reporting one document three
-// times tells its author there are three changelogs to delete.
-func TestDocumentsAreDeduplicatedAcrossOverlappingArguments(t *testing.T) {
-	dir := t.TempDir()
-	file := writeDoc(t, dir, "sub/CHANGELOG.md", "")
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir, filepath.Join(dir, "sub"), file}))
-	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")))
-}
-
 // TestRunFailsOnMissingPath pins that a path that does not exist is an error,
 // not an empty success.
 func TestRunFailsOnMissingPath(t *testing.T) {
 	assert.Equal(t, 1, run([]string{filepath.Join(t.TempDir(), "absent.md")}))
+}
+
+// TestARunWithNoPathsIsAFailure pins that being given nothing is an error, not a
+// clean pass. A runner whose root placeholder expands to nothing would otherwise
+// green the gate over a repository no analyzer ever looked at — indistinguishable,
+// at the exit code, from one it read and found clean.
+func TestARunWithNoPathsIsAFailure(t *testing.T) {
+	assert.Equal(t, 1, run(nil))
+	assert.ErrorIs(t, docfiles.ErrNoPaths.With(nil), docfiles.ErrNoPaths)
+}
+
+// TestAnUnreadableTreeIsReportedRatherThanLost pins that the command ATTACHES
+// what the walk could not enter. The shared discovery hands those back; a
+// command that dropped them on the floor would pass every other test while
+// losing exactly the tree an unchecked document hides in.
+func TestAnUnreadableTreeIsReportedRatherThanLost(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", banned)
+	locked := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(locked, 0o750))
+	original := files.WalkDir
+	files.WalkDir = deniedTree(locked)
+	t.Cleanup(func() { files.WalkDir = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+	assert.Contains(t, out, "locked", "the tree is reported rather than passed over")
+	assert.Contains(t, out, "changelog", "and every other document keeps its findings")
+}
+
+// deniedTree walks for real but reports one path as unreadable.
+//
+// The failure is injected through the SEAM rather than with chmod, because a
+// test that removes read permission does not test what it says on a machine
+// whose user ignores permissions: the gate's own CI container runs as ROOT.
+func deniedTree(at string) func(string, fs.WalkDirFunc) error {
+	return func(root string, walk fs.WalkDirFunc) error {
+		return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if path == at {
+				return walk(path, entry, os.ErrPermission)
+			}
+			return walk(path, entry, err)
+		})
+	}
 }
 
 // TestANamedNonRegularFileIsRefusedRatherThanRead pins that a FIFO or device
@@ -88,10 +122,10 @@ func TestANamedNonRegularFileIsRefusedRatherThanRead(t *testing.T) {
 	pipe := filepath.Join(dir, "notes.md")
 	require.NoError(t, syscall.Mkfifo(pipe, 0o600))
 
-	_, err := documents([]string{pipe})
+	_, err := discovery().Expand([]string{pipe})
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, docfiles.ErrNotRegularFile)
+	assert.ErrorIs(t, err, goyze.ErrNotRegularFile)
 	assert.Equal(t, 1, run([]string{pipe}), "and the command reports the failure")
 }
 
@@ -140,148 +174,4 @@ func TestMainExits(t *testing.T) {
 	main()
 
 	assert.Equal(t, 1, code)
-}
-
-// TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing pins that a deliberate request is
-// answered. The walk lstats its own root, so a symlink to a directory reported
-// itself as a non-directory and the walk yielded NOTHING — a silent clean pass,
-// which is the one result a gate must never invent.
-func TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing(t *testing.T) {
-	base := t.TempDir()
-	writeDoc(t, base, "tree/CHANGELOG.md", "")
-	link := filepath.Join(base, "linkdir")
-	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{link}))
-	assert.Contains(t, buf.String(), "CHANGELOG.md")
-}
-
-// TestResolvedRootKeepsAnOrdinaryPathAsGiven pins the other half: only a
-// SYMLINKED root is resolved. Resolving every root rewrote ordinary paths too —
-// on this platform a temp directory sits under a symlinked prefix — so one
-// document reached by two arguments was reported under two names.
-func TestResolvedRootKeepsAnOrdinaryPathAsGiven(t *testing.T) {
-	dir := t.TempDir()
-	file := writeDoc(t, dir, "CHANGELOG.md", "")
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir, file}))
-	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")),
-		"the walked path and the named path are the same document")
-}
-
-// TestResolvedRootFallsBackWhenASymlinkCannotBeResolved pins the arm that keeps
-// an unresolvable root from becoming a crash or a silent pass: the walk
-// proceeds with the path as given, so whatever the walk itself can reach is
-// still reported rather than the whole argument being dropped.
-func TestResolvedRootFallsBackWhenASymlinkCannotBeResolved(t *testing.T) {
-	base := t.TempDir()
-	writeDoc(t, base, "tree/CHANGELOG.md", "")
-	link := filepath.Join(base, "linkdir")
-	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
-
-	original := evalSymlinks
-	evalSymlinks = func(string) (string, error) { return "", errors.New("cannot resolve") }
-	t.Cleanup(func() { evalSymlinks = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{link}), "an unresolvable root is walked as given, not abandoned")
-	assert.NotContains(t, buf.String(), "CHANGELOG.md",
-		"the walk lstats that root and finds a symlink, which is exactly why resolving it matters")
-}
-
-// TestANamedDocumentIsAnalyzedEvenWhenGitIgnoresIt pins the filter's scope: it
-// stops a WALK claiming files the repository does not own, and does not
-// overrule an author who asked about one outright.
-func TestANamedDocumentIsAnalyzedEvenWhenGitIgnoresIt(t *testing.T) {
-	dir := t.TempDir()
-	named := writeDoc(t, dir, "var/CHANGELOG.md", "")
-
-	original := checkIgnore
-	checkIgnore = func(goyze.RepoDir, []string) (map[string]bool, error) {
-		return map[string]bool{named: true}, nil
-	}
-	t.Cleanup(func() { checkIgnore = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{named}))
-	assert.Contains(t, buf.String(), "CHANGELOG.md")
-}
-
-// TestCanonicalFallsBackToTheSpelling pins that a path which cannot be resolved
-// keeps its own spelling as its identity, so the document is still analyzed
-// rather than dropped for being unidentifiable.
-func TestCanonicalFallsBackToTheSpelling(t *testing.T) {
-	dir := t.TempDir()
-	file := writeDoc(t, dir, "CHANGELOG.md", "")
-
-	original := evalSymlinks
-	evalSymlinks = func(string) (string, error) { return "", errors.New("cannot resolve") }
-	t.Cleanup(func() { evalSymlinks = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{file}))
-	assert.Contains(t, buf.String(), "CHANGELOG.md")
-}
-
-// TestOneDocumentReachedByTwoSpellingsIsReportedOnce pins that identity is the
-// FILE. EvalSymlinks resolves links without absolutising, so `CHANGELOG.md` and
-// `$PWD/CHANGELOG.md` were two identities for one document — and the symlink
-// half of the rule was pinned by nothing, because the link in the old test was
-// named `link.md`, which can never produce a file finding at all.
-func TestOneDocumentReachedByTwoSpellingsIsReportedOnce(t *testing.T) {
-	dir := t.TempDir()
-	target := writeDoc(t, dir, "CHANGELOG.md", "")
-	link := filepath.Join(dir, "CHANGELOG-link.md")
-	require.NoError(t, os.Symlink(target, link))
-
-	relative, err := filepath.Rel(dir, target)
-	require.NoError(t, err)
-	t.Chdir(dir)
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{target, relative, "./" + relative}))
-	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")),
-		"one file, however it is spelled")
-}
-
-// TestANamedDocumentIsNotFilteredWhateverTheArgumentOrder pins the rule against
-// the ordering that broke it: a directory listed first claimed the file, and
-// the ignore filter then deleted the author's explicit request.
-func TestANamedDocumentIsNotFilteredWhateverTheArgumentOrder(t *testing.T) {
-	dir := t.TempDir()
-	ignored := writeDoc(t, dir, "var/CHANGELOG.md", "")
-
-	original := checkIgnore
-	checkIgnore = func(goyze.RepoDir, []string) (map[string]bool, error) {
-		return map[string]bool{ignored: true}, nil
-	}
-	t.Cleanup(func() { checkIgnore = original })
-
-	for name, args := range map[string][]string{
-		"directory first": {filepath.Join(dir, "var"), ignored},
-		"named first":     {ignored, filepath.Join(dir, "var")},
-	} {
-		buf := swapStdout(t)
-		require.Equal(t, 0, run(args), name)
-		assert.Contains(t, buf.String(), "CHANGELOG.md", "%s: the author asked for it by name", name)
-	}
-}
-
-// TestCanonicalFallsBackWhenAPathCannotBeMadeAbsolute pins the first arm of
-// identity: a path the working directory makes unresolvable keeps its own
-// spelling, so the document is still analyzed rather than dropped for being
-// unidentifiable.
-func TestCanonicalFallsBackWhenAPathCannotBeMadeAbsolute(t *testing.T) {
-	dir := t.TempDir()
-	file := writeDoc(t, dir, "CHANGELOG.md", "")
-
-	original := absolutePath
-	absolutePath = func(string) (string, error) { return "", os.ErrInvalid }
-	t.Cleanup(func() { absolutePath = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{file}))
-	assert.Contains(t, buf.String(), "CHANGELOG.md", "still analyzed, never dropped for being unidentifiable")
 }

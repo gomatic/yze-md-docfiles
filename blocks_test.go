@@ -141,3 +141,63 @@ func TestACommentOpenedMidLineStillComments(t *testing.T) {
 	assert.Len(t, analyze(t, "README.md", "Intro <!-- aside --> text\n\n## Changelog\n"), 1,
 		"a comment that closes on its own line leaves the document readable")
 }
+
+// TestACommentClosedInsideACodeSpanOnItsOpeningLine pins the contradiction that
+// two separate questions produced. Asking "is there an opener outside a code
+// span?" and "is there a closer?" on DIFFERENT texts made a comment opened and
+// closed on one line stay open forever — while the identical span on a
+// CONTINUATION line closed it, because that half reads the raw line. Three
+// characters, and every finding below them vanished.
+func TestACommentClosedInsideACodeSpanOnItsOpeningLine(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "README.md", "# Guide\n\n<!-- see `-->`\n\n## Changelog\n"), 1,
+		"the comment ends at the first raw closer, backticks or not")
+	assert.Len(t, analyze(t, "README.md", "<!-- a -->\n\n## Changelog\n"), 1,
+		"and an ordinary one-line comment closes too")
+	assert.Empty(t, analyze(t, "README.md", "<!-- a --> tail <!--\n## Changelog\n"),
+		"while a line that closes one and opens another stays open")
+	assert.Len(t, analyze(t, "README.md", "Shown: `<!--` opener\n\n## Changelog\n"), 1,
+		"a backticked OPENER is still only shown")
+}
+
+// TestAFenceInfoStringIsNotACommentOpener pins the order the two blocks are
+// tested in. A fenced block may carry an info string and `<!--` is a legal one —
+// read as a comment opener instead, it commented away every line after it and
+// nothing ever closed it.
+func TestAFenceInfoStringIsNotACommentOpener(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "README.md", "# Guide\n\n```<!--\ncode\n```\n\n## Changelog\n"), 1,
+		"the fence opens and closes, so the section after it is read")
+	assert.Empty(t, analyze(t, "README.md", "```<!--\n## Changelog\n```\n"),
+		"and the heading inside it is still an example")
+}
+
+// TestAsciidocFencesTheWayAsciidoctorDoes pins the other half of the Markdown
+// compatibility this family already accepts for headings. Taking `## Title` as a
+// heading in AsciiDoc while refusing its fenced block reported an AsciiDoc
+// document's own EXAMPLE as a section of it.
+func TestAsciidocFencesTheWayAsciidoctorDoes(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "guide.adoc", "= Guide\n\n```\n== Changelog\n```\n"),
+		"a backtick fence holds an example")
+	assert.Len(t, analyze(t, "guide.adoc", "= Guide\n\n```\ncode\n```\n\n== Changelog\n"), 1,
+		"and it closes, so a real section after it is read")
+	assert.Len(t, analyze(t, "notes.rst", "Guide\n=====\n\n```\nChangelog\n=========\n"), 1,
+		"reStructuredText has no fence at all, so its adornment still underlines")
+}
+
+// TestAClosingRunMustBeExactlyAsLongAsItsOpener pins the CommonMark rule that
+// makes code-span stripping safe. A longer run does not close a shorter span,
+// and reading one as a closer would swallow text that is not code.
+func TestAClosingRunMustBeExactlyAsLongAsItsOpener(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "README.md", "Shown: ``<!--`` opener\n\n## Changelog\n"), 1,
+		"a two-backtick run closes on two, so the opener inside it is shown")
+	assert.Empty(t, analyze(t, "README.md", "Shown: ``<!--` opener\n\n## Changelog\n"),
+		"a single backtick does not close a double run, so those backticks are literal "+
+			"text and the opener between them is real")
+}

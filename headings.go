@@ -174,7 +174,25 @@ func heading(family markup, text, following line) (line, bool) {
 // disagreed about the same words.
 func matched(title line) (line, bool) {
 	trimmed := line(strings.TrimSpace(string(title)))
-	return trimmed, changelogTitle.MatchString(string(unbracketed(trimmed)))
+	return trimmed, changelogTitle.MatchString(string(unbracketed(unlinked(trimmed))))
+}
+
+// unlinked is a title with a surrounding markdown link's target removed:
+// `[Unreleased](https://…/compare)` is the OTHER spelling Keep a Changelog
+// writes, and the vocabulary saw a title that was mostly a URL.
+func unlinked(title line) line {
+	text := string(title)
+	if !strings.HasSuffix(text, ")") {
+		return title
+	}
+	label, rest, found := strings.Cut(text, "](")
+	if !found || !strings.HasPrefix(label, "[") {
+		return title
+	}
+	if strings.Contains(rest[:len(rest)-1], "](") {
+		return title
+	}
+	return line(label + "]")
 }
 
 // unbracketed is a title with one surrounding pair of square brackets removed.

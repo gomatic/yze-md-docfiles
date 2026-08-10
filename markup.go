@@ -111,5 +111,19 @@ func (m markup) underlines(text line) bool {
 // adornment — reading it as a fence silenced every heading in the rest of the
 // file, which is how a `Changelog` section under a tilde rule went unreported.
 func (m markup) fences(marker byte) bool {
-	return m == markdownMarkup && (marker == '`' || marker == '~')
+	if marker == '`' {
+		// Asciidoctor accepts the backtick fence for the same Markdown
+		// compatibility that makes `## Title` a heading there. Accepting one
+		// half and not the other reported an AsciiDoc document's own EXAMPLE as
+		// a section of it — the failure the block model exists to prevent.
+		return m == markdownMarkup || m == asciidocMarkup
+	}
+	// The tilde fence is markdown's alone: in reStructuredText it underlines a
+	// section title, and in AsciiDoc a run of four is a block delimiter.
+	return m == markdownMarkup && marker == '~'
 }
+
+// hasComments reports a family whose documents carry HTML comments. Only
+// markdown does; reading `<!--` as a comment opener in the others commented away
+// text those formats render.
+func (m markup) hasComments() bool { return m == markdownMarkup }

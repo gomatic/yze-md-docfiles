@@ -192,3 +192,25 @@ func TestTheReportedTitleKeepsItsBrackets(t *testing.T) {
 	require.Len(t, diags, 1)
 	assert.Contains(t, diags[0].Message, `"[Unreleased]"`)
 }
+
+// TestTheLinkedKeepAChangelogSpellingIsRead pins the OTHER form Keep a Changelog
+// writes. `## [Unreleased](https://…/compare)` is what its own template emits,
+// and the vocabulary saw a title that was mostly a URL.
+func TestTheLinkedKeepAChangelogSpellingIsRead(t *testing.T) {
+	t.Parallel()
+
+	for _, title := range []string{
+		"## [Unreleased]",
+		"## [Unreleased](https://github.com/o/r/compare/v1.0.0...HEAD)",
+		"## [Changelog](./CHANGELOG.md)",
+	} {
+		assert.Len(t, analyze(t, "README.md", title+"\n"), 1, "%s opens a changelog", title)
+	}
+
+	for _, title := range []string{
+		"## [Contributing](CONTRIBUTING.md)",
+		"## See [the changelog](CHANGELOG.md) for details",
+	} {
+		assert.Empty(t, analyze(t, "README.md", title+"\n"), "%s is not one", title)
+	}
+}

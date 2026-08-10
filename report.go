@@ -39,6 +39,22 @@ const unreadableMessage = "cannot be analyzed as a document: %v; the gate cannot
 // this many findings is one problem too, and the true count is still named.
 const reportLimit = 10_000
 
+// ErrNoPaths reports a run given nothing to analyze. A runner whose root
+// placeholder expands to nothing would otherwise green the gate over a
+// repository no analyzer ever looked at.
+const ErrNoPaths errs.Const = "no paths to analyze"
+
+// Unreadable is the finding for each tree the walk could not enter. A directory
+// the gate cannot descend into is reported rather than passed over, so nothing
+// is lost in silence and the run still yields every other file's findings.
+func Unreadable(paths []string) []goyze.Diagnostic {
+	diags := make([]goyze.Diagnostic, 0, len(paths))
+	for _, path := range paths {
+		diags = append(diags, unreadable(Path(path), nil))
+	}
+	return diags
+}
+
 // Report runs the changelog check over each document and aggregates the
 // diagnostics into the lean stickler-json report.
 // Every diagnostic a run produces passes through ONE counter, ONE limit and ONE
@@ -54,8 +70,11 @@ func Report(read FileReader, files []string) goyze.Report {
 	total := findingCount(0)
 	truncatedAt := Path("")
 	for _, file := range files {
-		found := fileFindings(read, Path(file))
-		total += findingCount(len(found))
+		found, held := fileFindings(read, Path(file))
+		// The TRUE count, not the reported one: a document past its own limit
+		// hands back a truncated slice, and summing slices counted this run's
+		// truncation instead of the documents' findings.
+		total += held
 		if truncatedAt != "" {
 			// Past the limit the run keeps COUNTING but stops collecting, so
 			// the total it reports is the true one.
@@ -80,10 +99,10 @@ func Report(read FileReader, files []string) goyze.Report {
 // A file the gate cannot open becomes ONE finding against that file and the run
 // continues, exactly as an unparseable one does — a single blob mis-claimed by
 // discovery can never take every other file's findings down with it.
-func fileFindings(read FileReader, file Path) []goyze.Diagnostic {
+func fileFindings(read FileReader, file Path) ([]goyze.Diagnostic, findingCount) {
 	data, err := read(string(file))
 	if err != nil {
-		return []goyze.Diagnostic{unreadable(file, err)}
+		return []goyze.Diagnostic{unreadable(file, err)}, 1
 	}
 	return documentDiagnostics(file, Source(data))
 }
@@ -111,10 +130,10 @@ func unreadable(file Path, cause error) goyze.Diagnostic {
 
 // documentDiagnostics is one document's findings, with an unreadable document
 // reported as a finding of its own rather than raised as the whole run's error.
-func documentDiagnostics(file Path, source Source) []goyze.Diagnostic {
-	diags, err := Diagnostics(file, source)
+func documentDiagnostics(file Path, source Source) ([]goyze.Diagnostic, findingCount) {
+	diags, held, err := countedDiagnostics(file, source)
 	if err != nil {
-		return []goyze.Diagnostic{diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, err)))}
+		return []goyze.Diagnostic{diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, err)))}, 1
 	}
-	return diags
+	return diags, held
 }

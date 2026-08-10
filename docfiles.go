@@ -45,7 +45,7 @@ const ErrTooLarge errs.Const = "document is too large to analyze as prose"
 // declined to apply. It is generous by three
 // orders of magnitude over any real document, so it bounds the pathological
 // case without ever turning away prose.
-const SizeLimit = 8 << 20
+const SizeLimit goyze.ByteCount = 8 << 20
 
 // ErrNotText reports a document whose bytes are not text. A binary file cannot
 // be read as prose, and guessing at its lines would invent findings from
@@ -122,11 +122,21 @@ const findingLimit findingCount = 1000
 // A document that is not text yields [ErrNotText], so the caller surfaces a
 // tool failure rather than a clean pass over a file nobody read.
 func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
-	if len(source) > SizeLimit {
-		return nil, ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
+	diags, _, err := countedDiagnostics(at, source)
+	return diags, err
+}
+
+// countedDiagnostics is [Diagnostics] with the TRUE number of findings the
+// document holds, which is not the number reported: the per-document limit
+// truncates the slice, so a run summing the slices counted its own truncation
+// rather than the documents. It reported "11011 findings" over a tree holding
+// 16500, in the very sentence that says the true count is named.
+func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCount, error) {
+	if goyze.ByteCount(len(source)) > SizeLimit {
+		return nil, 0, ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
 	}
 	if !utf8.ValidString(string(source)) {
-		return nil, ErrNotText.With(nil, "path", string(at))
+		return nil, 0, ErrNotText.With(nil, "path", string(at))
 	}
 	base, ext := nameAndExtension(at)
 	// Stripped ONCE, here, so every reader below sees the same text. The
@@ -141,18 +151,22 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 		// alike. Exempting only the sections reported a machine-written
 		// CHANGELOG.md as a hand-maintained changelog — recommending generated
 		// release notes to a file that already was one.
-		return nil, nil
+		return nil, 0, nil
 	}
 	diags := fileDiagnostics(at, base, ext)
 	if !prose[ext] {
-		return diags, nil
+		return diags, findingCount(len(diags)), nil
 	}
 	headings, total := headingDiagnostics(at, text, family)
+	// Counted BEFORE the notice is appended. The truncation notice is this
+	// analyzer's own bookkeeping, not something the document contains, and
+	// counting it inflated the run total by one per truncated document.
+	held := findingCount(len(diags)) + total
 	diags = append(diags, headings...)
 	if total > findingLimit {
 		diags = append(diags, truncation(at, total))
 	}
-	return diags, nil
+	return diags, held, nil
 }
 
 // nameAndExtension is a path's final element and its lower-cased extension.

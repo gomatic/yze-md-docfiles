@@ -82,8 +82,14 @@ func (s scanner) stepBlock(next scanner, trimmed string, isCode bool) (scanner, 
 
 // openBlock enters whatever block this line opens, if it opens one.
 func (s scanner) openBlock(trimmed string, isCode, isAfterTitle bool) (scanner, bool) {
+	opened, isFence := opening(line(trimmed))
 	switch {
-	case s.markup == markdownMarkup && !isCode && opensComment(line(trimmed)):
+	case isFence && !isCode && s.markup.fences(opened.marker):
+		// Tested FIRST. A fenced block may carry an info string, and `<!--` is a
+		// legal one — read as a comment opener instead, it commented away every
+		// line after it and nothing ever closed it.
+		s.open = opened
+	case s.markup.hasComments() && !isCode && leavesCommentOpen(line(trimmed)):
 		s.isInComment = true
 	case s.markup.usesDelimitedBlocks() && !isCode && !isAfterTitle && delimiter.MatchString(trimmed):
 		// The SAME run of dashes underlines a title above it and delimits a
@@ -91,49 +97,72 @@ func (s scanner) openBlock(trimmed string, isCode, isAfterTitle bool) (scanner, 
 		// heading inside a block had its example reported as a section.
 		s.isInDelimited = true
 	default:
-		opened, isFence := opening(line(trimmed))
-		if !isFence || isCode || !s.markup.fences(opened.marker) {
-			return s, false
-		}
-		s.open = opened
+		return s, false
 	}
 	return s, true
 }
 
-// closesAndStaysClosed reports whether a comment is still open after this line.
-// A line may close one and open another — `--> visible <!--` — so finding a
-// closer is not the end of the question; the opener half already knew that.
+// closesAndStaysClosed reports whether a comment is still open after this line,
+// given that it began inside one.
 //
-// The closer is looked for in the RAW line, deliberately unlike [opensComment].
-// Inside an HTML comment there are no code spans: a comment is raw text, and a
-// backtick in it is a backtick. Stripping spans here would let a `-->` written
-// inside one fail to close a comment that markdown really does end there.
+// The closer is looked for in the RAW line: inside an HTML comment there are no
+// code spans, so a backticked `-->` really does end it. Only the remainder,
+// which is prose again, is asked the prose question.
 func closesAndStaysClosed(trimmed line) bool {
-	if !strings.Contains(string(trimmed), commentClose) {
+	raw := string(trimmed)
+	closed := strings.Index(raw, commentClose)
+	if closed < 0 {
 		return true
 	}
-	_, after, _ := strings.Cut(string(trimmed), commentClose)
-	// The remainder is prose again, so it is asked the prose question.
-	return opensComment(line(after))
+	return leavesCommentOpen(line(raw[closed+len(commentClose):]))
 }
 
-// opensComment reports a line that leaves an HTML comment open. The opener may
-// sit anywhere on the line — `text <!--` comments out everything after it — and
-// requiring it at the start left a heading on the next line reported as a
-// section of a document that had commented it away.
+// leavesCommentOpen reports a line that ends inside an HTML comment, having
+// begun outside one.
 //
-// Inline code spans are removed first. A backticked `<!--` is markdown SHOWING
-// the opener, not using it, and reading it as a real one gave any document that
-// explains markdown comments — this rule's own documentation among them — a
-// one-line, unlogged opt-out from every finding below it.
-func opensComment(trimmed line) bool {
-	text := string(withoutCodeSpans(trimmed))
-	open := strings.LastIndex(text, commentOpen)
-	if open < 0 {
-		return false
+// It is ONE scan rather than two questions, because the two disagreed. Asking
+// "is there an opener outside a code span?" and then "is there a closer?" on
+// DIFFERENT texts made `<!-- see `+"`"+`-->`+"`"+“ open a comment that never closed: the
+// closer was inside a code span, so the stripped text did not have it — while
+// the identical span on a CONTINUATION line did close the comment, because that
+// half reads the raw line. Three characters, an internal contradiction, and a
+// one-line opt-out from every finding below it.
+//
+// Scanning once gets both right: outside a comment a code span hides an opener,
+// and once an opener is found everything after it is raw until a closer.
+func leavesCommentOpen(text line) bool {
+	raw := string(text)
+	for at := 0; at < len(raw); {
+		switch {
+		case raw[at] == '`':
+			at += int(codeSpanWidth(line(raw[at:])))
+		case strings.HasPrefix(raw[at:], commentOpen):
+			closed := strings.Index(raw[at:], commentClose)
+			if closed < 0 {
+				return true
+			}
+			at += closed + len(commentClose)
+		default:
+			at++
+		}
 	}
-	return !strings.Contains(text[open:], commentClose)
+	return false
 }
+
+// codeSpanWidth is how much of the text a backtick run and its span occupy. An
+// unclosed run is literal text, so only the run itself is consumed and scanning
+// carries on through what follows it.
+func codeSpanWidth(text line) width {
+	run := backtickRun(text)
+	closed := closingRun(text[int(run):], run)
+	if closed == notFound {
+		return width(run)
+	}
+	return width(int(run) + int(closed) + int(run))
+}
+
+// width is how many bytes of a line a construct occupies.
+type width int
 
 // runLength is how many backticks stand together.
 type runLength int

@@ -70,3 +70,28 @@ func TestClosingRunReportsNotFoundForAnUnclosedSpan(t *testing.T) {
 	assert.Equal(t, offset(4), closingRun("code` rest", 1))
 	assert.Equal(t, offset(4), closingRun("code`` rest", 2), "a run of the same length closes it")
 }
+
+// TestLeavesCommentOpenReadsTheLineOnce names the scan and the contradiction it
+// replaced. Two separate questions — "is there an opener outside a code span?"
+// and "is there a closer?" — were asked of DIFFERENT texts, so a comment opened
+// and closed on one line stayed open forever while the identical span on a
+// continuation line closed it.
+func TestLeavesCommentOpenReadsTheLineOnce(t *testing.T) {
+	t.Parallel()
+
+	for name, text := range map[string]struct {
+		in   line
+		open bool
+	}{
+		"plain prose":         {"just words", false},
+		"opened":              {"text <!--", true},
+		"opened and closed":   {"<!-- a -->", false},
+		"closed then opened":  {"<!-- a --> tail <!--", true},
+		"closer in a span":    {"<!-- see `-->`", false},
+		"opener in a span":    {"shown `<!--` only", false},
+		"unclosed span first": {"stray ` then <!--", true},
+		"empty":               {"", false},
+	} {
+		assert.Equal(t, text.open, leavesCommentOpen(text.in), "%s", name)
+	}
+}

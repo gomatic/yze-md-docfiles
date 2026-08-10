@@ -70,3 +70,27 @@ func TestUnbracketedRemovesOnlyASurroundingPair(t *testing.T) {
 		assert.Equal(t, title.want, unbracketed(title.in), "%s", name)
 	}
 }
+
+// TestUnlinkedRemovesOnlyAWholeSurroundingLink names the narrowness the strip
+// claims. Keep a Changelog writes `## [Unreleased](…/compare)`, so the target
+// has to come off before the vocabulary is consulted — but only when the WHOLE
+// title is one link, or a heading that merely mentions one would be rewritten
+// into something its author never typed.
+func TestUnlinkedRemovesOnlyAWholeSurroundingLink(t *testing.T) {
+	t.Parallel()
+
+	for name, title := range map[string]struct{ in, want line }{
+		"whole link":     {"[Unreleased](https://x/y)", "[Unreleased]"},
+		"relative":       {"[Changelog](./CHANGELOG.md)", "[Changelog]"},
+		"empty target":   {"[Unreleased]()", "[Unreleased]"},
+		"no target":      {"[Unreleased]", "[Unreleased]"},
+		"bare":           {"Unreleased", "Unreleased"},
+		"no closer":      {"[Unreleased](https://x/y", "[Unreleased](https://x/y"},
+		"two links":      {"[a](x) and [b](y)", "[a](x) and [b](y)"},
+		"link mid-title": {"See [the log](x) here", "See [the log](x) here"},
+		"no opener":      {"Changelog](x)", "Changelog](x)"},
+		"empty":          {"", ""},
+	} {
+		assert.Equal(t, title.want, unlinked(title.in), "%s", name)
+	}
+}
