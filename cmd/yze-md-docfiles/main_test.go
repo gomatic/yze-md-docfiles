@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	goyze "github.com/gomatic/go-yze"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -244,7 +245,7 @@ func TestANamedDocumentIsAnalyzedEvenWhenGitIgnoresIt(t *testing.T) {
 	named := writeDoc(t, dir, "var/CHANGELOG.md", "")
 
 	original := checkIgnore
-	checkIgnore = func(repoDir, []string) (map[string]bool, error) {
+	checkIgnore = func(goyze.RepoDir, []string) (map[string]bool, error) {
 		return map[string]bool{named: true}, nil
 	}
 	t.Cleanup(func() { checkIgnore = original })

@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
+	goyze "github.com/gomatic/go-yze"
+
 	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
@@ -21,7 +23,7 @@ var (
 	walkDir                = filepath.WalkDir
 	evalSymlinks           = filepath.EvalSymlinks
 	lstatPath              = os.Lstat
-	checkIgnore            = gitCheckIgnore
+	checkIgnore            = goyze.GitCheckIgnore
 	stdout       io.Writer = os.Stdout
 )
 
@@ -75,7 +77,7 @@ func documents(args []string) ([]string, error) {
 		// does not own; it does not overrule an author who asked.
 		named = appendUnseen(named, seen, found)
 	}
-	return append(named, tracked(checkIgnore, walked)...), nil
+	return append(named, goyze.Tracked(checkIgnore, walked)...), nil
 }
 
 // canonical is the path with symlinks resolved, used ONLY as the identity of a
