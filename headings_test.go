@@ -144,3 +144,94 @@ func TestTheFindingNamesTheHeadingAndItsLine(t *testing.T) {
 	assert.Equal(t, 5, diags[0].Line)
 	assert.Contains(t, diags[0].Message, `"Recent Changes"`, "the quoted title is trimmed")
 }
+
+// TestAnIndentedFenceIsCodeNotADelimiter pins the repair for a two-line
+// evasion. Four spaces (or a tab) makes a line the literal CONTENT of an
+// indented code block, so a ``` written there is text a tutorial is showing the
+// reader — and reading it as a delimiter opened a fence that never closed,
+// silencing every heading in the rest of the document.
+func TestAnIndentedFenceIsCodeNotADelimiter(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"four spaces": "A fence opens with:\n\n    ```\n\nand closes with three more.\n\n## Changelog\n",
+		"tab":         "A fence opens with:\n\n\t```go\n\nand closes with three more.\n\n## Changelog\n",
+		"six spaces":  "Shown:\n\n      ~~~\n\n## Changelog\n",
+	} {
+		diags := analyze(t, "README.md", source)
+		assert.Len(t, diags, 1, "%s: an indented delimiter is code, so the later section is still read", name)
+	}
+
+	assert.Empty(t, analyze(t, "README.md", "  ```\n## Changelog\n  ```\n"),
+		"three spaces is still a fence, which is where CommonMark draws the line")
+}
+
+// TestAnIndentedDelimiterNeverClosesAnOpenFence pins the same boundary on the
+// closing side: a delimiter indented into code territory does not end the block
+// it appears in.
+func TestAnIndentedDelimiterNeverClosesAnOpenFence(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "README.md", "```\n    ```\n## Changelog\n"),
+		"the block is still open, so the heading inside it is an example")
+}
+
+// TestReStructuredTextAdornmentsUnderlineSectionsRatherThanFence pins the
+// markup split. `~~~` is a fenced code block in markdown and a section
+// adornment in reStructuredText, and reading an RST adornment as a fence
+// silenced every heading in the rest of the file.
+func TestReStructuredTextAdornmentsUnderlineSectionsRatherThanFence(t *testing.T) {
+	t.Parallel()
+
+	rst := "Guide\n=====\n\nUsage\n~~~~~\n\nChangelog\n=========\n\n- entry\n"
+	assert.Len(t, analyze(t, "guide.rst", rst), 1, "the tilde rule underlines a section, it opens nothing")
+	assert.Len(t, analyze(t, "guide.adoc", rst), 1, "AsciiDoc reads the same way")
+	assert.Empty(t, analyze(t, "guide.md", rst), "in markdown the same text IS a fence, and the heading is inside it")
+}
+
+// TestEveryAdornmentCharacterUnderlinesASection pins the vocabulary of the
+// two-line form. reStructuredText lets any repeated punctuation underline a
+// title, so a rule that knew only markdown's two characters missed most RST
+// headings anyone actually writes.
+func TestEveryAdornmentCharacterUnderlinesASection(t *testing.T) {
+	t.Parallel()
+
+	for _, rule := range []string{"=========", "---------", "~~~~~~~~~", "^^^^^^^^^", `"""""""""`, "+++++++++", "#########", "*********"} {
+		assert.Len(t, analyze(t, "guide.rst", "Changelog\n"+rule+"\n\n- entry\n"), 1,
+			"%s underlines a section", rule)
+	}
+
+	assert.Empty(t, analyze(t, "guide.md", "Changelog\n~~~~~~~~~\n"), "markdown has only two of them")
+}
+
+// TestAnIndentedUnderlineIsNotAHeading pins the indentation bound on the
+// two-line form, which the marker-run form already had.
+func TestAnIndentedUnderlineIsNotAHeading(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "README.md", "Changelog\n    =========\n"))
+	assert.Len(t, analyze(t, "README.md", "Changelog\n   =========\n"), 1, "three spaces is still an underline")
+}
+
+// TestAFenceNeedsThreeMarkers pins the lower bound. With fewer, an ordinary
+// inline code span at the start of a line would open a block and silence the
+// rest of the document.
+func TestAFenceNeedsThreeMarkers(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "README.md", "`code`\n\n## Changelog\n"), 1, "one backtick opens nothing")
+	assert.Len(t, analyze(t, "README.md", "``code``\n\n## Changelog\n"), 1, "two open nothing either")
+	assert.Empty(t, analyze(t, "README.md", "```\n## Changelog\n"), "three do")
+}
+
+// TestATitleIsTrimmedOfEveryKindOfSpace pins that the two written forms agree
+// about the same words. The marker-run pattern consumes only spaces and tabs,
+// so a heading ending in a vertical tab kept it and stopped matching while the
+// identical title in the two-line form was reported — one character silenced
+// the rule, and the forms disagreed.
+func TestATitleIsTrimmedOfEveryKindOfSpace(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "README.md", "## Changelog\v\n"), 1, "a vertical tab is not part of the title")
+	assert.Len(t, analyze(t, "README.md", "Changelog\v\n=========\n"), 1, "and the other form agrees")
+}

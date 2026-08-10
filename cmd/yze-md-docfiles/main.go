@@ -15,11 +15,14 @@ import (
 
 // Injected collaborators, so the command is testable without real I/O.
 var (
-	osExit             = os.Exit
-	readFile           = os.ReadFile
-	statPath           = os.Stat
-	walkDir            = filepath.WalkDir
-	stdout   io.Writer = os.Stdout
+	osExit                 = os.Exit
+	readFile               = os.ReadFile
+	statPath               = os.Stat
+	walkDir                = filepath.WalkDir
+	evalSymlinks           = filepath.EvalSymlinks
+	lstatPath              = os.Lstat
+	checkIgnore            = gitCheckIgnore
+	stdout       io.Writer = os.Stdout
 )
 
 func main() { osExit(run(os.Args[1:])) }
@@ -64,7 +67,7 @@ func documents(args []string) ([]string, error) {
 		}
 		files = appendUnseen(files, seen, found)
 	}
-	return files, nil
+	return tracked(checkIgnore, ignoreRoot(files), files), nil
 }
 
 // appendUnseen adds the documents not already collected, in the order they were
@@ -77,6 +80,17 @@ func appendUnseen(files []string, seen map[string]bool, found []string) []string
 		}
 	}
 	return files
+}
+
+// ignoreRoot is the directory the ignore question is asked from: the first
+// document's own directory, which is inside the repository being analyzed. A
+// run covers one repository — that is what a gate does — so one root answers
+// for every path in it.
+func ignoreRoot(files []string) repoDir {
+	if len(files) == 0 {
+		return "."
+	}
+	return repoDir(filepath.Dir(files[0]))
 }
 
 // expand is one argument's documents.
@@ -93,7 +107,10 @@ func expand(arg argument) ([]string, error) {
 		// is loud; hanging is the one outcome nobody can diagnose.
 		return nil, docfiles.ErrNotRegularFile.With(nil, "path", string(arg))
 	}
-	return []string{string(arg)}, nil
+	// Cleaned, so `a.md`, `./a.md` and `sub/../a.md` are one document rather
+	// than three. Deduplication keyed on the raw string told an author there
+	// were three changelogs to delete when there was one.
+	return []string{filepath.Clean(string(arg))}, nil
 }
 
 // searchDir is a directory argument expanded recursively to the documents it

@@ -7,18 +7,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDocumentLinesReadsWindowsAndBomFilesExactlyAsUnixOnes pins the
-// normalisation the scan depends on. A byte-order mark precedes the first
-// character while being invisible in the text, and a carriage return rides at
-// the end of every line a Windows editor writes; leaving either in place makes
-// a heading a reader plainly sees invisible to the rule.
-func TestDocumentLinesReadsWindowsAndBomFilesExactlyAsUnixOnes(t *testing.T) {
+// TestNextLineReadsWindowsFilesExactlyAsUnixOnes pins the normalisation the
+// streaming scan depends on. A carriage return rides at the end of every line a
+// Windows editor writes, and leaving it in place makes a heading a reader
+// plainly sees invisible to the rule. (The byte-order mark is stripped once, by
+// the caller, before the first line is cut.)
+func TestNextLineReadsWindowsFilesExactlyAsUnixOnes(t *testing.T) {
 	t.Parallel()
 
-	unix := documentLines("## Changelog\nbody\n")
+	read := func(source string) []line {
+		var lines []line
+		text := remaining(source)
+		for {
+			one, rest, ok := nextLine(text)
+			if !ok {
+				return lines
+			}
+			lines, text = append(lines, one), rest
+		}
+	}
 
-	assert.Equal(t, unix, documentLines("\ufeff## Changelog\nbody\n"), "a BOM changes nothing")
-	assert.Equal(t, unix, documentLines("## Changelog\r\nbody\r\n"), "CRLF changes nothing")
+	assert.Equal(t, read("## Changelog\nbody\n"), read("## Changelog\r\nbody\r\n"),
+		"a carriage return is not part of the line")
+	assert.Equal(t, []line{"a", "", "b"}, read("a\n\nb"), "an empty line is a line")
+
+	_, _, ok := nextLine("")
+	assert.False(t, ok, "an exhausted document yields no line")
 }
 
 // TestHeadingFindingQuotesATitleUnambiguously pins how a title reaches the

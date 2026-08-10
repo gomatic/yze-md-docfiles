@@ -34,6 +34,16 @@ import (
 	goyze "github.com/gomatic/go-yze"
 )
 
+// ErrTooLarge reports a document past the size this rule will read. Prose is
+// not megabytes; a file that big is generated output, a data dump, or a mistake,
+// and reading it costs its own size in memory for a rule that cannot apply.
+const ErrTooLarge errs.Const = "document is too large to analyze as prose"
+
+// sizeLimit is the largest document read, in bytes. It is generous by three
+// orders of magnitude over any real document, so it bounds the pathological
+// case without ever turning away prose.
+const sizeLimit = 8 << 20
+
 // ErrNotText reports a document whose bytes are not text. A binary file cannot
 // be read as prose, and guessing at its lines would invent findings from
 // whatever byte happened to look like a `#`.
@@ -96,13 +106,23 @@ type baseName string
 // A document that is not text yields [ErrNotText], so the caller surfaces a
 // tool failure rather than a clean pass over a file nobody read.
 func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
+	if len(source) > sizeLimit {
+		return nil, ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
+	}
 	if !utf8.ValidString(string(source)) {
 		return nil, ErrNotText.With(nil, "path", string(at))
 	}
 	base, ext := nameAndExtension(at)
+	if isGenerated(source) {
+		// A generated document is out of scope ENTIRELY, file and sections
+		// alike. Exempting only the sections reported a machine-written
+		// CHANGELOG.md as a hand-maintained changelog — recommending generated
+		// release notes to a file that already was one.
+		return nil, nil
+	}
 	diags := fileDiagnostics(at, base, ext)
-	if prose[ext] && !isGenerated(source) {
-		diags = append(diags, headingDiagnostics(at, source)...)
+	if prose[ext] {
+		diags = append(diags, headingDiagnostics(at, source, markupOf(ext))...)
 	}
 	return diags, nil
 }
@@ -130,10 +150,14 @@ func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
 // editing it, so reporting one tells an author to change a file that will be
 // overwritten — the ratified rule is scoped to hand-maintained prose.
 //
-// The marker must be the generator's own "do not edit" claim. A file that
+// The marker must be a GENERATOR'S claim of authorship, not merely a request
+// not to edit. A bare "DO NOT EDIT" was a one-line, audit-trail-free opt-out
+// from the whole rule — anyone could silence a hand-written changelog by typing
+// three words at the top of it — whereas "Code generated" and "@generated" are
+// the conventional statements a tool writes about its own output. A file that
 // merely invites manual additions is hand-maintained BY DESIGN, and exempting
 // those would have silently excused every finding this rule has in the fleet.
-var generatedMarkers = []string{"DO NOT EDIT", "Code generated", "@generated"}
+var generatedMarkers = []string{"Code generated", "@generated"}
 
 // generatedHeader is how many leading lines are searched for a marker. A
 // generator writes its claim at the top; a document ABOUT generated code may

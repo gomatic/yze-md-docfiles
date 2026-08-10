@@ -20,7 +20,7 @@ type entryName string
 
 // documentsUnder walks dir collecting every document beneath it.
 func documentsUnder(dir searchDir) ([]string, error) {
-	root := filepath.Clean(string(dir))
+	root := resolvedRoot(dir)
 	var files []string
 	err := walkDir(root, func(path string, d fs.DirEntry, err error) error {
 		switch {
@@ -34,6 +34,28 @@ func documentsUnder(dir searchDir) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// resolvedRoot is the directory a walk starts from, with a symlinked root
+// followed. The walk lstats its own root, so a symlink to a directory reported
+// itself as a non-directory and the walk yielded NOTHING — a deliberate request
+// answered with a silent clean pass, which is the one result a gate must never
+// invent. A root that cannot be resolved is cleaned and walked as given.
+func resolvedRoot(dir searchDir) string {
+	cleaned := filepath.Clean(string(dir))
+	info, err := lstatPath(cleaned)
+	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		// Only a symlinked root is resolved. Resolving every root would rewrite
+		// ordinary paths too — on this platform a temp directory sits under a
+		// symlinked prefix — so the same document reached by two arguments
+		// would be reported under two different names.
+		return cleaned
+	}
+	resolved, err := evalSymlinks(cleaned)
+	if err != nil {
+		return cleaned
+	}
+	return resolved
 }
 
 // prunedDir decides whether to descend into one directory. The walk root is
@@ -54,6 +76,11 @@ func prunedDir(root walkRoot, path entryPath, name entryName) error {
 // changelog is its own business, and reporting it tells this repository to
 // delete a file it does not own — a Python virtualenv's vendored licence files
 // turned up in the first real sweep, one of them not even valid UTF-8.
+//
+// This list names only trees that are somebody else's in EVERY repository. What
+// a particular repository ignores — a coverage directory, a plugin cache — is
+// git's answer, not a list's, and is applied separately; a prune list that tried
+// to know both would grow forever and still be wrong for the next repository.
 // `testdata` is here for a reason specific to this family: it is where an
 // analyzer is proven in both directions, so a fixture that MUST contain a
 // violation would otherwise be reported as one.
@@ -112,5 +139,9 @@ func isDocument(path entryPath) bool {
 	if documentExtensions[filepath.Ext(base)] {
 		return true
 	}
-	return !strings.Contains(base, ".") && changelogStems[base]
+	// Every changelog stem is dotless, so a name reaching here with an
+	// extension cannot match one — the guard that used to sit in front of this
+	// lookup could never be false, which is an unreachable condition dressed as
+	// a check.
+	return changelogStems[base]
 }

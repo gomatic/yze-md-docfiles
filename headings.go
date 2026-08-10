@@ -14,11 +14,8 @@ type line string
 // lineNumber is a 1-based position in a document, as a diagnostic reports it.
 type lineNumber int
 
-// lineIndex is a 0-based offset into a document's lines, as the scan walks
-// them. It is a separate type from [lineNumber] on purpose: the two differ by
-// one, and reading a document with the wrong one silently reports every finding
-// on its neighbour's line.
-type lineIndex int
+// remaining is the not-yet-read tail of a document being streamed.
+type remaining string
 
 // byteOrderMark is the UTF-8 BOM some editors write. It precedes the first
 // character while being invisible in the text, so a heading check that does not
@@ -46,68 +43,137 @@ var changelogTitle = regexp.MustCompile(
 // heading and anchoring hard at the first column let both spellings through.
 var atxHeading = regexp.MustCompile(`^ {0,3}(?:#{1,6}|={1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$`)
 
-// underline is the second line of a two-line heading: markdown's setext form
-// and reStructuredText's, where the title sits on the line ABOVE.
-var underline = regexp.MustCompile(`^ {0,3}(?:=+|-+)[ \t]*$`)
+// setextUnderline is the second line of markdown's two-line heading, where the
+// title sits on the line ABOVE. Markdown recognises two adornment characters
+// here; reStructuredText recognises many more, which is what [adornmentUnderline]
+// is for.
+var setextUnderline = regexp.MustCompile(`^ {0,3}(?:=+|-+)[ \t]*$`)
+
+// adornmentUnderline is reStructuredText's and AsciiDoc's equivalent. Their
+// section adornment is ANY repeated punctuation, not just markdown's two, so a
+// `Changelog` underlined with tildes or carets was invisible to a pattern that
+// only knew `=` and `-` — which is most of the RST headings anyone writes.
+var adornmentUnderline = regexp.MustCompile(`^ {0,3}(?:=+|-+|~+|\^+|"+|\++|#+|\*+|'+|` + "`+" + `|:+|\.+|_+)[ \t]*$`)
+
+// markup is the family a document is written in. It decides two things that
+// disagree between them: whether `~~~` opens a fenced code block (markdown) or
+// underlines a section title (reStructuredText), and which characters may
+// underline a title at all.
+type markup int
+
+const (
+	// markdownMarkup is markdown and everything read as it.
+	markdownMarkup markup = iota
+	// adornmentMarkup is reStructuredText and AsciiDoc, whose sections are
+	// underlined with repeated punctuation and which have no `~~~` fence.
+	adornmentMarkup
+)
+
+// adornmentExtensions are the prose extensions whose sections are underlined
+// with adornments rather than fenced with tildes.
+var adornmentExtensions = map[extension]bool{".rst": true, ".adoc": true}
+
+// markupOf is the family a document's extension puts it in.
+func markupOf(ext extension) markup {
+	if adornmentExtensions[ext] {
+		return adornmentMarkup
+	}
+	return markdownMarkup
+}
+
+// underlines reports a line that underlines the title above it.
+func (m markup) underlines(text line) bool {
+	if m == adornmentMarkup {
+		return adornmentUnderline.MatchString(string(text))
+	}
+	return setextUnderline.MatchString(string(text))
+}
+
+// fences reports whether this family spells a fenced code block with the given
+// marker. Only markdown does, and `~~~` in reStructuredText is a section
+// adornment — reading it as a fence silenced every heading in the rest of the
+// file, which is how a `Changelog` section under a tilde rule went unreported.
+func (m markup) fences(marker byte) bool {
+	return m == markdownMarkup && (marker == '`' || marker == '~')
+}
+
+// indentedCode is the indentation at which a line stops being markup and
+// becomes the literal contents of an indented code block: four spaces, or one
+// tab. A fence delimiter written there is TEXT, not a delimiter — and reading
+// one as a delimiter let two lines of an ordinary tutorial silence every
+// finding after them.
+const indentedCode = 4
+
+// isIndentedCode reports a line indented far enough to be code rather than
+// markup.
+func isIndentedCode(text line) bool {
+	if strings.HasPrefix(string(text), "\t") {
+		return true
+	}
+	return len(string(text))-len(strings.TrimLeft(string(text), " ")) >= indentedCode
+}
 
 // headingDiagnostics reports every heading that opens a changelog section.
-func headingDiagnostics(at Path, source Source) []goyze.Diagnostic {
-	lines := documentLines(source)
+func headingDiagnostics(at Path, source Source, family markup) []goyze.Diagnostic {
 	var diags []goyze.Diagnostic
-	state := scanner{}
-	for i, text := range lines {
+	state := scanner{markup: family}
+	text := remaining(strings.TrimPrefix(string(source), byteOrderMark))
+	current, text, ok := nextLine(text)
+	for number := lineNumber(1); ok; number++ {
+		upcoming, tail, hasNext := nextLine(text)
+		text = tail
 		var isProse bool
-		state, isProse = state.step(text)
-		if !isProse {
-			continue
+		state, isProse = state.step(current)
+		if isProse {
+			if title, found := heading(family, current, upcoming); found {
+				diags = append(diags, diagnostic(at, number, headingFinding(title)))
+			}
 		}
-		if title, ok := heading(text, next(lines, lineIndex(i))); ok {
-			diags = append(diags, diagnostic(at, lineNumber(i+1), headingFinding(title)))
-		}
+		current, ok = upcoming, hasNext
 	}
 	return diags
 }
 
-// documentLines is a document's lines, with the byte-order mark and carriage returns
-// removed so a file written on Windows or by an editor that stamps a BOM reads
-// exactly as one written on Unix.
-func documentLines(source Source) []line {
-	text := strings.TrimPrefix(string(source), byteOrderMark)
-	raw := strings.Split(text, "\n")
-	lines := make([]line, 0, len(raw))
-	for _, one := range raw {
-		lines = append(lines, line(strings.TrimSuffix(one, "\r")))
+// nextLine cuts the next line off text, normalising the carriage return a
+// Windows editor leaves behind and reporting whether there was one.
+//
+// The document is STREAMED rather than split into a slice of lines. Splitting
+// allocated a string header per line and then a second slice of the same size,
+// which cost roughly thirty-six times the file: a 38 MB document of newlines
+// drove 1.4 GB resident. A document is read once, in order, with one line of
+// lookahead — nothing here needs them all at once.
+func nextLine(text remaining) (line, remaining, bool) {
+	if text == "" {
+		return "", "", false
 	}
-	return lines
-}
-
-// next is the line after i, or empty at the end of the document.
-func next(lines []line, at lineIndex) line {
-	if int(at)+1 < len(lines) {
-		return lines[at+1]
-	}
-	return ""
+	one, rest, _ := strings.Cut(string(text), "\n")
+	return line(strings.TrimSuffix(one, "\r")), remaining(rest), true
 }
 
 // heading is the changelog title a line opens, if it opens one. Both written
 // forms are read: the marker-run heading, and the two-line form whose title
 // sits above its underline.
-func heading(text, following line) (line, bool) {
+func heading(family markup, text, following line) (line, bool) {
 	if found := atxHeading.FindStringSubmatch(string(text)); found != nil {
 		return matched(line(found[1]))
 	}
-	if underline.MatchString(string(following)) {
-		return matched(line(strings.TrimSpace(string(text))))
+	if family.underlines(following) {
+		return matched(text)
 	}
 	return "", false
 }
 
-// matched reports a title when it names a changelog. The title arrives already
-// trimmed — the marker-run pattern consumes the space on both sides of it, and
-// the two-line form trims its own — so trimming again here would be code no
-// input could distinguish, which is code no test can pin.
+// matched reports a title when it names a changelog, trimmed.
+//
+// The trim is NOT redundant with the patterns that produce the title, which was
+// the previous claim here and was wrong: the marker-run pattern consumes only
+// spaces and tabs, so a heading ending in a vertical tab or a non-breaking
+// space kept it and stopped matching, while the same title in the two-line form
+// was reported. One character silenced the rule, and the two written forms
+// disagreed about the same words.
 func matched(title line) (line, bool) {
-	return title, changelogTitle.MatchString(string(title))
+	trimmed := line(strings.TrimSpace(string(title)))
+	return trimmed, changelogTitle.MatchString(string(trimmed))
 }
 
 // headingFinding is the message for one banned section. The title is quoted
@@ -123,6 +189,7 @@ func headingFinding(title line) finding {
 // itself.
 type scanner struct {
 	open        fence
+	markup      markup
 	isInComment bool
 }
 
@@ -149,9 +216,10 @@ const minimumFence = 3
 // a heading may be read from.
 func (s scanner) step(text line) (scanner, bool) {
 	trimmed := strings.TrimSpace(string(text))
+	isCode := isIndentedCode(text)
 	switch {
 	case s.open.isOpen:
-		s.open = s.open.after(line(trimmed))
+		s.open = s.open.after(line(trimmed), isCode)
 		return s, false
 	case s.isInComment:
 		s.isInComment = !strings.Contains(trimmed, commentClose)
@@ -160,8 +228,8 @@ func (s scanner) step(text line) (scanner, bool) {
 		s.isInComment = true
 		return s, false
 	}
-	if opened, ok := opening(line(trimmed)); ok {
-		return scanner{open: opened}, false
+	if opened, ok := opening(line(trimmed)); ok && !isCode && s.markup.fences(opened.marker) {
+		return scanner{open: opened, markup: s.markup}, false
 	}
 	return s, true
 }
@@ -171,9 +239,9 @@ func (s scanner) step(text line) (scanner, bool) {
 // opened it and followed by nothing else — which is what makes a ```` block
 // survive the ``` fences it wraps, and an info string like ```go not close
 // anything.
-func (f fence) after(trimmed line) fence {
+func (f fence) after(trimmed line, isCode bool) fence {
 	closing, ok := opening(trimmed)
-	if ok && closing.marker == f.marker && closing.length >= f.length && closing.isBare {
+	if ok && !isCode && closing.marker == f.marker && closing.length >= f.length && closing.isBare {
 		return fence{}
 	}
 	return f

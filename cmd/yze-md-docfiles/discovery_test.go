@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"os"
@@ -139,4 +140,121 @@ func TestRunFailsWhenTheWalkCallbackErrors(t *testing.T) {
 	t.Cleanup(func() { walkDir = original })
 
 	assert.Equal(t, 1, run([]string{t.TempDir()}))
+}
+
+// TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing pins that a deliberate request is
+// answered. The walk lstats its own root, so a symlink to a directory reported
+// itself as a non-directory and the walk yielded NOTHING — a silent clean pass,
+// which is the one result a gate must never invent.
+func TestResolvedRootNeverAnswersASymlinkedDirectoryWithNothing(t *testing.T) {
+	base := t.TempDir()
+	writeDoc(t, base, "tree/CHANGELOG.md", "")
+	link := filepath.Join(base, "linkdir")
+	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{link}))
+	assert.Contains(t, buf.String(), "CHANGELOG.md")
+}
+
+// TestResolvedRootKeepsAnOrdinaryPathAsGiven pins the other half: only a
+// SYMLINKED root is resolved. Resolving every root rewrote ordinary paths too —
+// on this platform a temp directory sits under a symlinked prefix — so one
+// document reached by two arguments was reported under two names.
+func TestResolvedRootKeepsAnOrdinaryPathAsGiven(t *testing.T) {
+	dir := t.TempDir()
+	file := writeDoc(t, dir, "CHANGELOG.md", "")
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir, file}))
+	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")),
+		"the walked path and the named path are the same document")
+}
+
+// TestEverySpellingOfOnePathIsOneDocument pins that deduplication normalises.
+// Keyed on the raw string, `a.md`, `./a.md` and `sub/../a.md` were three
+// documents, telling an author there were three changelogs to delete.
+func TestEverySpellingOfOnePathIsOneDocument(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "sub/CHANGELOG.md", "")
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{
+		filepath.Join(dir, "sub", "CHANGELOG.md"),
+		dir + "/sub/./CHANGELOG.md",
+		dir + "/sub/../sub/CHANGELOG.md",
+		filepath.Join(dir, "sub") + string(filepath.Separator),
+	}))
+	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("hand-maintained changelog")))
+}
+
+// TestDocumentsAreReportedInTheOrderTheyWereFound pins the ordering the
+// deduplication must preserve: a report that reorders findings makes two runs
+// over the same tree produce different output.
+func TestDocumentsAreReportedInTheOrderTheyWereFound(t *testing.T) {
+	dir := t.TempDir()
+	first := writeDoc(t, dir, "a.md", banned)
+	second := writeDoc(t, dir, "b.md", banned)
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{first, second}))
+	assert.Less(t, bytes.Index(buf.Bytes(), []byte("a.md")), bytes.Index(buf.Bytes(), []byte("b.md")))
+}
+
+// TestTrackedNeverReportsADocumentGitIgnores pins the rule that replaced an
+// ever-growing prune list. A coverage directory, a plugin cache, a downloaded
+// theme — what a particular repository ignores differs per repository, and git
+// already knows. Telling an author to delete a changelog that is not in their
+// repository is a finding they cannot act on.
+func TestTrackedNeverReportsADocumentGitIgnores(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", banned)
+	ignored := writeDoc(t, dir, "var/notes.md", banned)
+
+	original := checkIgnore
+	checkIgnore = func(repoDir, []string) (map[string]bool, error) { return map[string]bool{ignored: true}, nil }
+	t.Cleanup(func() { checkIgnore = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+	assert.Contains(t, out, "README.md")
+	assert.NotContains(t, out, "var/notes.md")
+}
+
+// TestGitCheckIgnoreCannotTurnAMissingToolIntoACleanPass pins the direction that failure
+// takes. A tree that is not a repository, or a machine with no git, must yield
+// every document — treating "cannot answer" as "ignore everything" would turn a
+// missing tool into a silent clean pass.
+func TestGitCheckIgnoreCannotTurnAMissingToolIntoACleanPass(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", banned)
+
+	original := checkIgnore
+	checkIgnore = func(repoDir, []string) (map[string]bool, error) { return nil, errors.New("not a git repository") }
+	t.Cleanup(func() { checkIgnore = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	assert.Contains(t, buf.String(), "README.md")
+}
+
+// TestResolvedRootFallsBackWhenASymlinkCannotBeResolved pins the arm that keeps
+// an unresolvable root from becoming a crash or a silent pass: the walk
+// proceeds with the path as given, so whatever the walk itself can reach is
+// still reported rather than the whole argument being dropped.
+func TestResolvedRootFallsBackWhenASymlinkCannotBeResolved(t *testing.T) {
+	base := t.TempDir()
+	writeDoc(t, base, "tree/CHANGELOG.md", "")
+	link := filepath.Join(base, "linkdir")
+	require.NoError(t, os.Symlink(filepath.Join(base, "tree"), link))
+
+	original := evalSymlinks
+	evalSymlinks = func(string) (string, error) { return "", errors.New("cannot resolve") }
+	t.Cleanup(func() { evalSymlinks = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{link}), "an unresolvable root is walked as given, not abandoned")
+	assert.NotContains(t, buf.String(), "CHANGELOG.md",
+		"the walk lstats that root and finds a symlink, which is exactly why resolving it matters")
 }
