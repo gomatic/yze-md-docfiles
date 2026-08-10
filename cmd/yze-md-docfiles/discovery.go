@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
 // walkRoot is the directory a walk started from.
@@ -108,13 +110,27 @@ func nestedRepository(path entryPath) bool {
 // testing that silently skipped the file the author actually wrote.
 func readableSource(path entryPath, d fs.DirEntry) bool {
 	if d.Type().IsRegular() {
-		return true
+		return withinSizeLimit(path, d)
 	}
 	if d.Type()&fs.ModeSymlink == 0 {
 		return false
 	}
 	info, err := statPath(string(path))
-	return err == nil && info.Mode().IsRegular()
+	return err == nil && info.Mode().IsRegular() && info.Size() <= docfiles.SizeLimit
+}
+
+// withinSizeLimit reports a file small enough to read as prose.
+//
+// The size is taken from the DIRECTORY ENTRY, before the file is opened. Asking
+// afterwards was no bound at all: a 2 GiB document cost 4.3 GB resident — its
+// own size to read and again to convert — before the limit that refused it was
+// ever consulted.
+func withinSizeLimit(path entryPath, d fs.DirEntry) bool {
+	info, err := d.Info()
+	if err != nil {
+		info, err = statPath(string(path))
+	}
+	return err != nil || info.Size() <= docfiles.SizeLimit
 }
 
 // documentExtensions are the suffixes prose is written in.

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,7 +25,13 @@ func TestIgnoreHelperProcess(_ *testing.T) {
 	if os.Getenv(helperEnabled) != "1" {
 		return
 	}
-	_, _ = fmt.Fprint(os.Stdout, os.Getenv("DOCFILES_IGNORE_OUT"))
+	// The child's output is NUL-separated, but a NUL cannot travel in an
+	// environment variable — it terminates the string. The separator on the way
+	// in is \x01, which no path can contain: a newline would be ambiguous for
+	// the one case that matters, a path holding a newline.
+	if out := os.Getenv("DOCFILES_IGNORE_OUT"); out != "" {
+		_, _ = fmt.Fprint(os.Stdout, strings.ReplaceAll(out, "\x01", "\x00"))
+	}
 	code, _ := strconv.Atoi(os.Getenv("DOCFILES_IGNORE_CODE"))
 	os.Exit(code)
 }
@@ -53,7 +61,7 @@ func TestGitCheckIgnoreReportsTheIgnoredSubset(t *testing.T) {
 	kept, dropped := "docs/README.md", "var/notes.md"
 	absolute, err := filepath.Abs(dropped)
 	require.NoError(t, err)
-	stubGit(t, absolute+"\n", 0)
+	stubGit(t, absolute+"\x01", 0)
 
 	ignored, err := gitCheckIgnore(".", []string{kept, dropped})
 
@@ -75,13 +83,45 @@ func TestGitCheckIgnoreTreatsNothingIgnoredAsSuccess(t *testing.T) {
 
 // TestGitCheckIgnoreSurfacesARealFailure pins the other exit statuses — 128 is
 // "not a git repository" — so the caller can fail open deliberately rather than
-// mistaking a broken tool for an empty answer.
+// mistaking a broken tool for an empty answer. It carries the exit status,
+// because "status 1 is clean and everything else is itself" is the whole
+// contract and an assertion that merely sees AN error cannot tell them apart.
 func TestGitCheckIgnoreSurfacesARealFailure(t *testing.T) {
 	stubGit(t, "", 128)
 
 	_, err := gitCheckIgnore(".", []string{"docs/README.md"})
 
 	require.Error(t, err)
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 128, exit.ExitCode())
+}
+
+// TestAPartialAnswerIsNotAnAnswer pins the failure that reached real trees:
+// asked about two repositories at once, git prints what it could resolve and
+// THEN aborts, and accepting that output dropped half the list while silently
+// keeping the other half's ignored files.
+func TestAPartialAnswerIsNotAnAnswer(t *testing.T) {
+	stubGit(t, "/a/ignored.md\x01", 128)
+
+	_, err := gitCheckIgnore(".", []string{"/a/ignored.md", "/b/ignored.md"})
+
+	require.Error(t, err, "output alongside a failure is a partial answer, and the caller must fail open")
+}
+
+// TestAPathHoldingANewlineIsStillAsked pins the NUL protocol. Newline-delimited,
+// such a path split into two questions and came back C-quoted, so the one file
+// git HAD answered about was the one the filter failed to drop.
+func TestAPathHoldingANewlineIsStillAsked(t *testing.T) {
+	odd := "docs/two\nlines.md"
+	absolute, err := filepath.Abs(odd)
+	require.NoError(t, err)
+	stubGit(t, absolute+"\x01", 0)
+
+	ignored, err := gitCheckIgnore(".", []string{odd})
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]bool{odd: true}, ignored)
 }
 
 // TestGitCheckIgnoreOfNoFilesAsksNothing pins that an empty list never spawns a
@@ -105,10 +145,48 @@ func TestAbsolutePathFailureStillAsksAboutThePath(t *testing.T) {
 	original := absolutePath
 	absolutePath = func(string) (string, error) { return "", os.ErrInvalid }
 	t.Cleanup(func() { absolutePath = original })
-	stubGit(t, "var/notes.md\n", 0)
+	stubGit(t, "var/notes.md\x01", 0)
 
 	ignored, err := gitCheckIgnore(".", []string{"var/notes.md"})
 
 	require.NoError(t, err)
 	assert.Equal(t, map[string]bool{"var/notes.md": true}, ignored)
+}
+
+// TestTrackedNeverReportsADocumentGitIgnores pins the rule that replaced an
+// ever-growing prune list. A coverage directory, a plugin cache, a downloaded
+// theme — what a particular repository ignores differs per repository, and git
+// already knows. Telling an author to delete a changelog that is not in their
+// repository is a finding they cannot act on.
+func TestTrackedNeverReportsADocumentGitIgnores(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", banned)
+	ignored := writeDoc(t, dir, "var/notes.md", banned)
+
+	original := checkIgnore
+	checkIgnore = func(repoDir, []string) (map[string]bool, error) { return map[string]bool{ignored: true}, nil }
+	t.Cleanup(func() { checkIgnore = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+	assert.Contains(t, out, "README.md")
+	assert.NotContains(t, out, "var/notes.md")
+}
+
+// TestGitCheckIgnoreCannotTurnAMissingToolIntoACleanPass pins the direction that failure
+// takes. A tree that is not a repository, or a machine with no git, must yield
+// every document — treating "cannot answer" as "ignore everything" would turn a
+// missing tool into a silent clean pass.
+func TestGitCheckIgnoreCannotTurnAMissingToolIntoACleanPass(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", banned)
+
+	original := checkIgnore
+	checkIgnore = func(repoDir, []string) (map[string]bool, error) { return nil, errors.New("not a git repository") }
+	t.Cleanup(func() { checkIgnore = original })
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	assert.Contains(t, buf.String(), "README.md")
 }

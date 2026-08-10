@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
 // TestDiscoveryClaimsOnlyProse pins which files a walk reads: the extensions a
@@ -201,44 +203,6 @@ func TestDocumentsAreReportedInTheOrderTheyWereFound(t *testing.T) {
 	assert.Less(t, bytes.Index(buf.Bytes(), []byte("a.md")), bytes.Index(buf.Bytes(), []byte("b.md")))
 }
 
-// TestTrackedNeverReportsADocumentGitIgnores pins the rule that replaced an
-// ever-growing prune list. A coverage directory, a plugin cache, a downloaded
-// theme — what a particular repository ignores differs per repository, and git
-// already knows. Telling an author to delete a changelog that is not in their
-// repository is a finding they cannot act on.
-func TestTrackedNeverReportsADocumentGitIgnores(t *testing.T) {
-	dir := t.TempDir()
-	writeDoc(t, dir, "README.md", banned)
-	ignored := writeDoc(t, dir, "var/notes.md", banned)
-
-	original := checkIgnore
-	checkIgnore = func(repoDir, []string) (map[string]bool, error) { return map[string]bool{ignored: true}, nil }
-	t.Cleanup(func() { checkIgnore = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir}))
-	out := buf.String()
-	assert.Contains(t, out, "README.md")
-	assert.NotContains(t, out, "var/notes.md")
-}
-
-// TestGitCheckIgnoreCannotTurnAMissingToolIntoACleanPass pins the direction that failure
-// takes. A tree that is not a repository, or a machine with no git, must yield
-// every document — treating "cannot answer" as "ignore everything" would turn a
-// missing tool into a silent clean pass.
-func TestGitCheckIgnoreCannotTurnAMissingToolIntoACleanPass(t *testing.T) {
-	dir := t.TempDir()
-	writeDoc(t, dir, "README.md", banned)
-
-	original := checkIgnore
-	checkIgnore = func(repoDir, []string) (map[string]bool, error) { return nil, errors.New("not a git repository") }
-	t.Cleanup(func() { checkIgnore = original })
-	buf := swapStdout(t)
-
-	require.Equal(t, 0, run([]string{dir}))
-	assert.Contains(t, buf.String(), "README.md")
-}
-
 // TestResolvedRootFallsBackWhenASymlinkCannotBeResolved pins the arm that keeps
 // an unresolvable root from becoming a crash or a silent pass: the walk
 // proceeds with the path as given, so whatever the walk itself can reach is
@@ -257,4 +221,49 @@ func TestResolvedRootFallsBackWhenASymlinkCannotBeResolved(t *testing.T) {
 	require.Equal(t, 0, run([]string{link}), "an unresolvable root is walked as given, not abandoned")
 	assert.NotContains(t, buf.String(), "CHANGELOG.md",
 		"the walk lstats that root and finds a symlink, which is exactly why resolving it matters")
+}
+
+// TestWithinSizeLimitRefusesBeforeOpening pins the bound that actually bounds.
+// Asking after the read was no bound at all — a 2 GiB document cost 4.3 GB
+// resident, its own size to read and again to convert, before the limit that
+// refused it was ever consulted. The size comes from the directory entry.
+func TestWithinSizeLimitRefusesBeforeOpening(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "small.md", banned)
+	huge := filepath.Join(dir, "huge.md")
+	require.NoError(t, os.WriteFile(huge, nil, 0o600))
+	require.NoError(t, os.Truncate(huge, docfiles.SizeLimit+1))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+	assert.Contains(t, out, "small.md")
+	assert.NotContains(t, out, "huge.md", "never opened, so never read and never reported")
+}
+
+// entryWithoutInfo is a directory entry the walk cannot describe.
+type entryWithoutInfo struct{ name string }
+
+func (e entryWithoutInfo) Name() string             { return e.name }
+func (entryWithoutInfo) IsDir() bool                { return false }
+func (entryWithoutInfo) Type() fs.FileMode          { return 0 }
+func (entryWithoutInfo) Info() (fs.FileInfo, error) { return nil, errors.New("no info") }
+
+// TestWithinSizeLimitFallsBackToStat pins the arm taken when the walk cannot
+// describe an entry: the file is measured directly, and if it cannot be
+// measured at all it is READ rather than dropped in silence — a gate must not
+// skip a file because it could not size it.
+func TestWithinSizeLimitFallsBackToStat(t *testing.T) {
+	dir := t.TempDir()
+	small := writeDoc(t, dir, "notes.md", banned)
+
+	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
+		"measured by stat when the entry cannot describe itself")
+
+	original := statPath
+	statPath = func(string) (os.FileInfo, error) { return nil, errors.New("cannot stat") }
+	t.Cleanup(func() { statPath = original })
+
+	assert.True(t, withinSizeLimit(entryPath(small), entryWithoutInfo{name: "notes.md"}),
+		"and read rather than silently skipped when it cannot be measured at all")
 }

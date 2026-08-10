@@ -235,3 +235,62 @@ func TestATitleIsTrimmedOfEveryKindOfSpace(t *testing.T) {
 	assert.Len(t, analyze(t, "README.md", "## Changelog\v\n"), 1, "a vertical tab is not part of the title")
 	assert.Len(t, analyze(t, "README.md", "Changelog\v\n=========\n"), 1, "and the other form agrees")
 }
+
+// TestAnIndentedCommentOpenerIsCodeNotAComment pins the hole that survived the
+// round-2 repair verbatim. The indentation rule was added for fences and never
+// applied to comments, so two lines of an ordinary tutorial — a four-space
+// indented `<!--` — silenced every finding after them, and no closing marker
+// was ever needed because the state never cleared.
+func TestAnIndentedCommentOpenerIsCodeNotAComment(t *testing.T) {
+	t.Parallel()
+
+	source := "How to comment things out:\n\n    <!--\n    still code\n\n# Changelog\n\n- 1.0\n"
+
+	assert.Len(t, analyze(t, "README.md", source), 1, "the indented opener is code, so the section is read")
+}
+
+// TestACommentOpenedMidLineStillComments pins the other direction: `text <!--`
+// comments out everything after it, and requiring the opener at the start of
+// the line reported a heading the document had commented away.
+func TestACommentOpenedMidLineStillComments(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "README.md", "Intro text <!--\n## Changelog\n-->\nEnd.\n"))
+	assert.Len(t, analyze(t, "README.md", "Intro <!-- aside --> text\n\n## Changelog\n"), 1,
+		"a comment that closes on its own line leaves the document readable")
+}
+
+// TestADelimitedBlockIsAnExampleNotASection pins the AsciiDoc and RST block
+// forms. The same run of dashes is a section adornment under a title and a
+// listing delimiter after a blank line, so a document SHOWING a banned heading
+// inside a listing block had its example reported as a section — the failure
+// the scanner exists to prevent, in the two formats it had no block model for.
+func TestADelimitedBlockIsAnExampleNotASection(t *testing.T) {
+	t.Parallel()
+
+	adoc := "= My Doc\n\nHere is how NOT to write a doc:\n\n[source,asciidoc]\n----\n== Changelog\n\n* 1.0\n----\n\nDone.\n"
+	assert.Empty(t, analyze(t, "guide.adoc", adoc), "the listing block holds an example")
+
+	rst := "Guide\n=====\n\nExample of a banned section::\n\n.. code-block:: rst\n\n  Changelog\n  ---------\n\n  * 1.0\n"
+	assert.Empty(t, analyze(t, "guide.rst", rst), "an indented literal block is quoted, not written")
+}
+
+// TestADelimitedBlockClosesSoLaterSectionsAreRead pins that the block model is
+// a model and not a switch: a real section after the example is still reported.
+func TestADelimitedBlockClosesSoLaterSectionsAreRead(t *testing.T) {
+	t.Parallel()
+
+	adoc := "= My Doc\n\n----\n== Changelog\n----\n\nChangelog\n=========\n\n* 1.0\n"
+
+	assert.Len(t, analyze(t, "guide.adoc", adoc), 1, "the block closed, so the real section is read")
+}
+
+// TestAnUnderlinedTitleIsStillAHeadingInAdornmentMarkup pins the distinction
+// the blank line carries: the same characters underline a title when one sits
+// directly above them.
+func TestAnUnderlinedTitleIsStillAHeadingInAdornmentMarkup(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "guide.rst", "Changelog\n---------\n\n* 1.0\n"), 1)
+	assert.Len(t, analyze(t, "guide.adoc", "== Changelog\n\n* 1.0\n"), 1, "and the marker-run form still works")
+}

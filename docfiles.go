@@ -27,6 +27,7 @@ package docfiles
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -39,10 +40,13 @@ import (
 // and reading it costs its own size in memory for a rule that cannot apply.
 const ErrTooLarge errs.Const = "document is too large to analyze as prose"
 
-// sizeLimit is the largest document read, in bytes. It is generous by three
+// SizeLimit is the largest document read, in bytes. It is exported so the
+// command can refuse a file from its directory entry, BEFORE opening it —
+// asking afterwards cost the file's own size twice over for a rule that then
+// declined to apply. It is generous by three
 // orders of magnitude over any real document, so it bounds the pathological
 // case without ever turning away prose.
-const sizeLimit = 8 << 20
+const SizeLimit = 8 << 20
 
 // ErrNotText reports a document whose bytes are not text. A binary file cannot
 // be read as prose, and guessing at its lines would invent findings from
@@ -100,13 +104,26 @@ type extension string
 // baseName is a file's final path element.
 type baseName string
 
+// findingCount is how many findings a document produced.
+type findingCount int
+
+// findingLimit bounds how many findings ONE document contributes.
+//
+// Streaming the lines removed the amplification from the line slice and left it
+// in the diagnostic slice: eight megabytes of legal prose, every line a banned
+// heading, produced 230 MB of report and a gigabyte resident — and four such
+// files in one walk reached 4.7 GB. No author needs the ten-thousandth
+// instance to act, and a document with this many is one problem, not ten
+// thousand.
+const findingLimit = 1000
+
 // Diagnostics reports the changelog findings for one document: the file itself
 // when its name is a changelog, and every heading that opens one.
 //
 // A document that is not text yields [ErrNotText], so the caller surfaces a
 // tool failure rather than a clean pass over a file nobody read.
 func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
-	if len(source) > sizeLimit {
+	if len(source) > SizeLimit {
 		return nil, ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
 	}
 	if !utf8.ValidString(string(source)) {
@@ -123,6 +140,9 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 	diags := fileDiagnostics(at, base, ext)
 	if prose[ext] {
 		diags = append(diags, headingDiagnostics(at, source, markupOf(ext))...)
+	}
+	if len(diags) > findingLimit {
+		diags = append(diags[:findingLimit], truncation(at, findingCount(len(diags))))
 	}
 	return diags, nil
 }
@@ -157,12 +177,14 @@ func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
 // the conventional statements a tool writes about its own output. A file that
 // merely invites manual additions is hand-maintained BY DESIGN, and exempting
 // those would have silently excused every finding this rule has in the fleet.
-var generatedMarkers = []string{"Code generated", "@generated"}
+var generatedClaim = regexp.MustCompile(`^\W*(?:Code generated .*DO NOT EDIT\.|@generated)\W*$`)
 
-// generatedHeader is how many leading lines are searched for a marker. A
-// generator writes its claim at the top; a document ABOUT generated code may
-// use the same words anywhere else, and reading the whole file would exempt the
-// standards that describe the convention.
+// generatedHeader is how many leading lines are searched for a claim. A
+// generator writes its claim at the top, alone on a line; a document ABOUT the
+// convention QUOTES it inside a sentence, and searching for the words anywhere
+// in those lines exempted two real fleet documents that merely described the
+// rule — a standards page and a project record, both hand-written, both wholly
+// out of scope by accident.
 const generatedHeader = 5
 
 // isGenerated reports a document that declares itself a generator's output.
@@ -179,14 +201,21 @@ func isGenerated(source Source) bool {
 	return false
 }
 
-// declaresGenerated reports one line carrying a generator's own claim.
+// declaresGenerated reports one line that IS a generator's claim rather than
+// one that merely contains its words. The claim stands alone on its line, in
+// whatever comment syntax the format uses; a sentence quoting it does not.
 func declaresGenerated(text line) bool {
-	for _, marker := range generatedMarkers {
-		if strings.Contains(string(text), marker) {
-			return true
-		}
-	}
-	return false
+	return generatedClaim.MatchString(strings.TrimSpace(strings.TrimSuffix(string(text), "-->")))
+}
+
+// truncationMessage formats the finding that stands for the ones not reported.
+const truncationMessage = "%d changelog findings in this document, of which %d are reported; a document with this " +
+	"many is one problem rather than that many, and reporting them all costs more memory than reading it did"
+
+// truncation is the finding that replaces everything past the limit, so the
+// count is never silently lost.
+func truncation(at Path, found findingCount) goyze.Diagnostic {
+	return diagnostic(at, 1, finding(fmt.Sprintf(truncationMessage, found, findingLimit)))
 }
 
 // diagnostic builds one finding at a line. Every finding of this rule addresses

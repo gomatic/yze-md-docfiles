@@ -104,6 +104,11 @@ func (m markup) fences(marker byte) bool {
 // finding after them.
 const indentedCode = 4
 
+// isIndented reports any leading whitespace at all.
+func isIndented(text line) bool {
+	return strings.TrimLeft(string(text), " \t") != string(text)
+}
+
 // isIndentedCode reports a line indented far enough to be code rather than
 // markup.
 func isIndentedCode(text line) bool {
@@ -181,87 +186,4 @@ func matched(title line) (line, bool) {
 // unambiguously rather than pasted into the sentence to be misread.
 func headingFinding(title line) finding {
 	return finding(fmt.Sprintf(headingMessage, string(title)))
-}
-
-// scanner tracks the block a line sits in, so a heading written as an EXAMPLE
-// is not read as a section. The standards themselves show banned shapes inside
-// fences and comments, and a rule that reported those could not describe
-// itself.
-type scanner struct {
-	open        fence
-	markup      markup
-	isInComment bool
-}
-
-// fence is an open fenced code block: the character that opened it and how many
-// of them there were.
-type fence struct {
-	length int
-	marker byte
-	isOpen bool
-	isBare bool
-}
-
-// commentOpen and commentClose delimit an HTML comment, which markdown passes
-// through untouched — a heading inside one is not a section of the document.
-const (
-	commentOpen  = "<!--"
-	commentClose = "-->"
-)
-
-// minimumFence is how many markers open a fenced block, per CommonMark.
-const minimumFence = 3
-
-// step advances the scanner over one line, reporting whether that line is prose
-// a heading may be read from.
-func (s scanner) step(text line) (scanner, bool) {
-	trimmed := strings.TrimSpace(string(text))
-	isCode := isIndentedCode(text)
-	switch {
-	case s.open.isOpen:
-		s.open = s.open.after(line(trimmed), isCode)
-		return s, false
-	case s.isInComment:
-		s.isInComment = !strings.Contains(trimmed, commentClose)
-		return s, false
-	case strings.HasPrefix(trimmed, commentOpen) && !strings.Contains(trimmed, commentClose):
-		s.isInComment = true
-		return s, false
-	}
-	if opened, ok := opening(line(trimmed)); ok && !isCode && s.markup.fences(opened.marker) {
-		return scanner{open: opened, markup: s.markup}, false
-	}
-	return s, true
-}
-
-// after is the fence's state once one line inside it has been read. A block
-// closes only on a run of ITS OWN marker, at least as long as the one that
-// opened it and followed by nothing else — which is what makes a ```` block
-// survive the ``` fences it wraps, and an info string like ```go not close
-// anything.
-func (f fence) after(trimmed line, isCode bool) fence {
-	closing, ok := opening(trimmed)
-	if ok && !isCode && closing.marker == f.marker && closing.length >= f.length && closing.isBare {
-		return fence{}
-	}
-	return f
-}
-
-// opening reads a line as a fence delimiter, reporting whether it is one.
-func opening(trimmed line) (fence, bool) {
-	text := string(trimmed)
-	if text == "" || (text[0] != '`' && text[0] != '~') {
-		return fence{}, false
-	}
-	marker := text[0]
-	length := len(text) - len(strings.TrimLeft(text, string(marker)))
-	if length < minimumFence {
-		return fence{}, false
-	}
-	return fence{
-		length: length,
-		marker: marker,
-		isOpen: true,
-		isBare: strings.TrimSpace(text[length:]) == "",
-	}, true
 }
