@@ -60,7 +60,8 @@ func gitCheckIgnore(root repoDir, paths []string) (map[string]bool, error) {
 	// the rule's flagship target invisible locally and a finding in CI. What a
 	// REPOSITORY ignores is the repository's business; what a machine ignores
 	// is not.
-	command := execCommand("git", "-c", "core.excludesFile=/dev/null", "check-ignore", "--stdin", "-z")
+	command := execCommand("git", "-c", "core.excludesFile=/dev/null", "-c", "core.quotePath=false",
+		"check-ignore", "--stdin", "-z")
 	command.Dir = string(root)
 	command.Stdin = strings.NewReader(strings.Join(absolute, "\x00"))
 	out, err := command.Output()
