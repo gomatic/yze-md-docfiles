@@ -31,24 +31,33 @@ func main() { osExit(run(os.Args[1:])) }
 // run expands the arguments to documents, runs the analyzer, and emits the
 // report.
 func run(args []string) int {
+	if err := report(args); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// report is the run itself, as an ERROR rather than an exit code. run answers
+// the process, which cannot be matched: with the refusal only ever reaching an
+// int and a line of stderr, this command's sentinel could be swapped for any
+// other with the whole suite green, so the failure the sentinel exists to name
+// had nothing behind it.
+func report(args []string) error {
 	if len(args) == 0 {
 		// Being given nothing is an error, not a clean pass. A runner whose
 		// root placeholder expands to nothing would otherwise green the gate
 		// over a repository no analyzer ever looked at.
-		return fail(docfiles.ErrNoPaths.With(nil))
+		return docfiles.ErrNoPaths.With(nil)
 	}
 	found, err := discovery().Expand(args)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	// Report cannot fail: an unreadable or unparseable document becomes a
 	// finding against that file rather than the run's error.
-	report := docfiles.Report(readFile, found.Files)
-	report.Diagnostics = append(docfiles.Unreadable(found.Unreadable), report.Diagnostics...)
-	if err := json.NewEncoder(stdout).Encode(report); err != nil {
-		return fail(err)
-	}
-	return 0
+	out := docfiles.Report(readFile, found.Files)
+	out.Diagnostics = append(docfiles.Unreadable(found.Unreadable), out.Diagnostics...)
+	return json.NewEncoder(stdout).Encode(out)
 }
 
 // fail prints err to stderr and returns the failure exit code.

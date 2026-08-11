@@ -44,7 +44,12 @@ var generatedClaims = map[extension]*regexp.Regexp{
 	// reached through a delimiter the format does not have.
 	markdownExt:     claimIn(commentSyntax{opener: `<!--`, closer: `-->`}),
 	markdownLongExt: claimIn(commentSyntax{opener: `<!--`, closer: `-->`}),
-	restructuredExt: claimIn(commentSyntax{opener: `\.\.`}),
+	// reStructuredText's comment is `..` followed by text. `.. name::` is a
+	// DIRECTIVE, which renders as a visible admonition rather than vanishing —
+	// `.. note:: @generated` at the top of a hand-written changelog is a note a
+	// reader sees, and it exempted the document. The opener therefore requires
+	// whitespace after the dots, which RST does too, and refuses a directive.
+	restructuredExt: claimIn(commentSyntax{opener: `\.\.[ \t]+`}),
 	asciidocExt:     claimIn(commentSyntax{opener: `//+`}),
 	// Plain text and the extensionless spelling have NO comment syntax, and say
 	// so here rather than by absence. Every spelling of the claim is a line a
@@ -67,6 +72,36 @@ func claimIn(delimiters commentSyntax) *regexp.Regexp {
 // commentSyntax is how one prose format opens and closes a comment. A format
 // whose comment runs to the end of the line has no closer.
 type commentSyntax struct{ opener, closer string }
+
+// directiveOpeners are the lines a format writes that LOOK like a comment and
+// render as visible content.
+//
+// reStructuredText has one: `..` introduces both a comment and a directive, and
+// only the directive has a name followed by two colons. `.. note:: @generated`
+// renders as an admonition a reader sees, and it exempted a hand-written
+// changelog whole — the same one-line, audit-trail-free opt-out this file has
+// now closed for a delimiter markdown does not have, for a fence, and for
+// indentation. Go's regexp has no lookahead, so the refusal is its own pattern
+// rather than a clause inside the claim.
+var directiveOpeners = map[extension]*regexp.Regexp{
+	restructuredExt: regexp.MustCompile(`^\.\.[ \t]+[^ \t:]+::`),
+	// The rest have no such ambiguity and say so here rather than by absence:
+	// markdown's only comment is the HTML one and it vanishes; AsciiDoc's `//`
+	// is a line comment with no directive spelling; plain text and the
+	// extensionless form have no comments at all.
+	markdownExt:      nil,
+	markdownLongExt:  nil,
+	asciidocExt:      nil,
+	plainTextExt:     nil,
+	extensionlessExt: nil,
+}
+
+// rendersVisibly reports a line whose own format shows it to a reader, however
+// much it resembles a comment.
+func rendersVisibly(text blockLine, ext extension) bool {
+	directive := directiveOpeners[ext]
+	return directive != nil && directive.MatchString(string(text))
+}
 
 // bareClaim is the same words with NO delimiter, which is only a claim when the
 // line is already INSIDE a comment.
@@ -162,6 +197,9 @@ func isGenerated(source Source, family markup, ext extension) bool {
 // quoting it does not match at all.
 func declaresGenerated(text line, where claimSite, ext extension) bool {
 	trimmed := strings.TrimSpace(string(text))
+	if rendersVisibly(blockLine(trimmed), ext) {
+		return false
+	}
 	claim, hasComments := generatedClaim(ext)
 	if !hasComments {
 		// `.txt` has no comment syntax, so every spelling of the claim is text a

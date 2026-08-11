@@ -266,3 +266,18 @@ func repeated(of string, times int) string {
 	}
 	return run
 }
+
+// TestTheFileFindingNamesTheFileNotItsPath pins what the message says. The path
+// is already the diagnostic's own field, so repeating it in the sentence says
+// the same thing twice and reads as though a directory were the problem — and
+// every assertion checked only a substring both spellings contain.
+func TestTheFileFindingNamesTheFileNotItsPath(t *testing.T) {
+	t.Parallel()
+
+	diags := analyze(t, "docs/notes/CHANGELOG.md", "")
+
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "CHANGELOG.md is a hand-maintained changelog")
+	assert.NotContains(t, diags[0].Message, "docs/notes/CHANGELOG.md is", "the path is the diagnostic's field")
+	assert.EqualValues(t, "docs/notes/CHANGELOG.md", diags[0].Path)
+}

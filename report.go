@@ -10,11 +10,14 @@ import (
 // ErrReadFile reports that a document could not be read.
 const ErrReadFile errs.Const = "cannot read documentation file"
 
-// ErrNotRegularFile reports a named path whose contents cannot be read as
-// prose. Reading one is not merely useless: a FIFO blocks forever on open and a
-// character device never ends, so a single such argument hangs the gate instead
-// of failing it.
-const ErrNotRegularFile errs.Const = "not a regular file"
+// ErrNotRegularFile reports a named path whose contents cannot be read as a
+// document. It IS the shared sentinel, not a second one beside it: the refusal
+// is raised by the discovery this command walks with, and nothing in this module
+// ever returned the local copy — a caller holding it matched only because the two
+// happened to carry the same text, so rewording either would have broken
+// `errors.Is` for everyone. That is the defect [ErrTooLarge] was already repaired
+// for, one declaration away.
+const ErrNotRegularFile = goyze.ErrNotRegularFile
 
 // FileReader reads a file's bytes; injected so aggregation is testable without
 // the filesystem.
@@ -30,14 +33,6 @@ const unreadableMessage = "cannot be analyzed as a document: %v; the gate cannot
 // mis-claimed by discovery, or one file the gate cannot open, can never take
 // every other file's findings down with it. Nothing is passed over in silence,
 // which is the one outcome a gate must never produce.
-// reportLimit bounds how many findings ONE RUN carries.
-//
-// The per-document limit bounds a document; it does not bound a tree. Two
-// thousand documents each at their own limit produced 490 MB of report and
-// 2.3 GB resident from 31 MB of input — the same failure the per-document
-// limit exists to prevent, reached by a route it does not cover. A run with
-// this many findings is one problem too, and the true count is still named.
-const reportLimit = 10_000
 
 // ErrNoPaths reports a run given nothing to analyze. A runner whose root
 // placeholder expands to nothing would otherwise green the gate over a
@@ -118,10 +113,6 @@ func fileFindings(read FileReader, file Path) ([]goyze.Diagnostic, findingCount)
 func runTruncation(at Path, found findingCount) goyze.Diagnostic {
 	return diagnostic(at, 1, finding(fmt.Sprintf(runTruncationMessage, found, reportLimit, at)))
 }
-
-// runTruncationMessage formats the finding that stands for the rest of a run.
-const runTruncationMessage = "%d changelog findings across this run, of which %d are reported; findings from %s " +
-	"onward are omitted, because a tree with this many is one problem rather than that many"
 
 // unreadable is the finding for a document the analyzer could not open at all.
 func unreadable(file Path, cause error) goyze.Diagnostic {

@@ -20,6 +20,11 @@ type scanner struct {
 	isInComment   bool
 	isAfterTitle  bool
 	isInDelimited bool
+	// isInRawHTML marks a markdown HTML block, whose lines are passed through to
+	// the output verbatim. A `# Changelog` inside one is not a heading — CommonMark
+	// emits no `<h1>` for it, goldmark confirms — and reading it as a section
+	// reported a heading a document was quoting rather than making.
+	isInRawHTML bool
 }
 
 // fence is an open fenced code block: the character that opened it and how many
@@ -50,12 +55,24 @@ func (s scanner) step(text line) (scanner, bool) {
 	if state, isBlock := was.stepBlock(s, trimmed, isIndentedCode(text)); isBlock {
 		return state, false
 	}
-	// An indented line is never a section title in the adornment formats: their
-	// headings are flush-left, and an indented run is the literal block a
-	// document is quoting rather than a section it is opening. In
-	// reStructuredText this is the ONLY block model — a literal block, a
-	// directive's body and a quoted example are all just indentation.
-	return s, !s.markup.usesAdornments() || !isIndented(text)
+	if state, isRaw := was.stepRawHTML(s, blockLine(trimmed)); isRaw {
+		return state, false
+	}
+	// An indented CODE line is not prose in ANY family. Markdown's four-space
+	// (or tab) indented code block is a block like a fence is, and it was the
+	// last door left open on the whole-document opt-out: a `CHANGELOG.md`
+	// beginning with four spaces and `<!-- @generated -->` renders that claim as
+	// a visible code block — CommonMark agrees, goldmark emits `<pre><code>` —
+	// and the rule read it as a claim being MADE and exempted the document,
+	// findings and file alike. That opt-out has now been closed for a delimiter
+	// markdown does not have, for a fence, and for indentation.
+	//
+	// An indented line is likewise never a section title in the adornment
+	// formats: their headings are flush-left, and an indented run is the literal
+	// block a document is quoting. In reStructuredText this is the ONLY block
+	// model — a literal block, a directive's body and a quoted example are all
+	// just indentation.
+	return s, !isIndentedCode(text) && (!s.markup.usesAdornments() || !isIndented(text))
 }
 
 // stepBlock advances the block state, reporting whether this line belongs to a
@@ -151,108 +168,6 @@ func leavesCommentOpen(text line) bool {
 	return false
 }
 
-// codeSpans is where each inline code span begins and how wide it is, computed
-// in ONE pass over the line.
-//
-// It used to be answered per position, by scanning forward for a matching
-// backtick run — which rescans the whole line for every run that never closes.
-// A line of runs of strictly increasing length closes none of them, so the cost
-// was superlinear in its length: eight megabytes of it, a size the limit
-// deliberately admits, took 27 seconds and reported nothing, and four such files
-// wedged the gate for two minutes.
-func codeSpans(text line) map[int]width {
-	runs := backtickRuns(text)
-	next := searching(runsByLength(runs))
-	spans := map[int]width{}
-	for i := runIndex(0); int(i) < len(runs); i++ {
-		closer, isClosed := next.after(runs, i)
-		if !isClosed {
-			// An unclosed run is literal text, and so is everything after it
-			// until some later run closes.
-			continue
-		}
-		spans[runs[i].at] = width(runs[closer].at + int(runs[closer].length) - runs[i].at)
-		i = closer
-	}
-	return spans
-}
-
-// backtickRun is one run of backticks: where it starts and how long it is.
-type backtickRunAt struct {
-	at     int
-	length runLength
-}
-
-// backtickRuns is every backtick run in the line, left to right.
-func backtickRuns(text line) []backtickRunAt {
-	var runs []backtickRunAt
-	for at := 0; at < len(text); {
-		if text[at] != '`' {
-			at++
-			continue
-		}
-		run := backtickRun(text[at:])
-		runs = append(runs, backtickRunAt{at: at, length: run})
-		at += int(run)
-	}
-	return runs
-}
-
-// runsByLength indexes the runs by length, so finding the next one of a given
-// length is a step rather than a scan.
-func runsByLength(runs []backtickRunAt) map[runLength][]int {
-	byLength := map[runLength][]int{}
-	for i, run := range runs {
-		byLength[run.length] = append(byLength[run.length], i)
-	}
-	return byLength
-}
-
-// search finds each run's closer, remembering how far it has already looked at
-// every length.
-//
-// The cursor is what makes the whole scan linear, and its absence is why the
-// one-pass rewrite was still quadratic on the shape it was written for. Indexing
-// by length turned "scan the line again" into "scan this length's runs again",
-// which is the same cost when a line is nothing BUT runs of one length: ordinary
-// prose with code spans has openers at candidate positions 0, 2, 4, …, and each
-// restarted from the front. A megabyte of `x` spans took 39 seconds — 112 times
-// slower than the pathological shape the regression test uses, at half the size
-// — so an eight-megabyte file, which the size limit deliberately admits, was
-// forty minutes of CPU in one call.
-//
-// A cursor never needs to go back: codeSpans asks about openers in increasing
-// order, and a closer already passed can never be the answer for a later one.
-type search struct {
-	byLength map[runLength][]int
-	cursor   map[runLength]int
-}
-
-// searching starts a search over runs already indexed by length.
-func searching(byLength map[runLength][]int) search {
-	return search{byLength: byLength, cursor: map[runLength]int{}}
-}
-
-// after is the first run past opener whose length matches — the closer
-// CommonMark asks for, which is a backtick string of the same length and no
-// other.
-func (s search) after(runs []backtickRunAt, opener runIndex) (runIndex, bool) {
-	length := runs[opener].length
-	candidates := s.byLength[length]
-	at := s.cursor[length]
-	for at < len(candidates) && runIndex(candidates[at]) <= opener {
-		at++
-	}
-	s.cursor[length] = at
-	if at == len(candidates) {
-		return 0, false
-	}
-	return runIndex(candidates[at]), true
-}
-
-// runIndex is a position in the list of backtick runs on one line.
-type runIndex int
-
 // after is the fence's state once one line inside it has been read. A block
 // closes only on a run of ITS OWN marker, at least as long as the one that
 // opened it and followed by nothing else — which is what makes a ```` block
@@ -268,7 +183,7 @@ func (f fence) after(trimmed line, isCode bool) fence {
 
 // opening reads a line as a fence delimiter, reporting whether it is one.
 func opening(trimmed line) (fence, bool) {
-	text := string(trimmed)
+	text := string(withoutListMarker(blockLine(trimmed)))
 	if text == "" || (text[0] != '`' && text[0] != '~') {
 		return fence{}, false
 	}

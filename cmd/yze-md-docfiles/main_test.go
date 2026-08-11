@@ -88,7 +88,12 @@ func TestRunFailsOnMissingPath(t *testing.T) {
 // at the exit code, from one it read and found clean.
 func TestARunWithNoPathsIsAFailure(t *testing.T) {
 	assert.Equal(t, 1, run(nil))
-	assert.ErrorIs(t, docfiles.ErrNoPaths.With(nil), docfiles.ErrNoPaths)
+	// The error the CODE produces, not one the assertion builds. Asserting that
+	// `ErrNoPaths.With(nil)` matches `ErrNoPaths` exercises the error helper and
+	// holds whatever run returns — swapping this failure's sentinel for any
+	// other left the whole suite green.
+	assert.ErrorIs(t, report(nil), docfiles.ErrNoPaths)
+	assert.ErrorIs(t, report([]string{}), docfiles.ErrNoPaths)
 }
 
 // TestAnUnreadableTreeIsReportedRatherThanLost pins that the command ATTACHES

@@ -6,8 +6,10 @@ package main
 // proven there, once, rather than three times in three ways that disagreed.
 
 import (
+	"path/filepath"
 	"testing"
 
+	goyze "github.com/gomatic/go-yze"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,5 +82,24 @@ func TestDiscoverySkipsSomebodyElsesProse(t *testing.T) {
 	assert.Contains(t, out, "README.md")
 	for _, skipped := range []string{"node_modules", "vendor", "themes", "testdata", ".git/", "submodule", ".venv"} {
 		assert.NotContains(t, out, skipped, "%s is not this repository's prose", skipped)
+	}
+}
+
+// TestEveryDotlessChangelogSpellingIsDiscovered pins the whole stem set rather
+// than a sample. Six of the nine had nothing behind them: each could be dropped
+// with the suite green, and each drop makes a real changelog file invisible to
+// every invocation — a silent pass on the one thing this rule exists to find.
+func TestEveryDotlessChangelogSpellingIsDiscovered(t *testing.T) {
+	for _, stem := range []string{
+		"CHANGELOG", "change-log", "change_log", "change log",
+		"CHANGES", "releasenotes", "release-notes", "release_notes", "release notes",
+	} {
+		assert.True(t, isDocument(goyze.FilePath(filepath.Join("docs", stem))),
+			"%q is a changelog whatever it is called next", stem)
+	}
+
+	for _, stem := range []string{"changelog-policy", "changes-guide", "readme", "notes"} {
+		assert.False(t, isDocument(goyze.FilePath(filepath.Join("docs", stem))),
+			"%q is a document about the subject, not the file", stem)
 	}
 }

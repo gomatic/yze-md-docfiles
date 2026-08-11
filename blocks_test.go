@@ -229,3 +229,72 @@ func TestATabIndentedLineIsLiteralContent(t *testing.T) {
 	assert.Len(t, analyze(t, "doc.rst", "para\n\nChangelog\n=========\n"), 1,
 		"while the same text at column zero is one")
 }
+
+// TestAnIndentedCodeBlockShowsMarkupRatherThanMakingIt pins markdown's other
+// block model, which had none. Four spaces (or a tab) makes a code block —
+// CommonMark says so and goldmark renders `<pre><code>` — and every line inside
+// one was read as prose. That left the whole-document opt-out reachable by
+// indentation: a `CHANGELOG.md` beginning with four spaces and a generated claim
+// exempted itself, findings and file alike, which is the third door onto the
+// same opt-out this repo has had to close.
+func TestAnIndentedCodeBlockShowsMarkupRatherThanMakingIt(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "CHANGELOG.md", "    <!-- @generated -->\n# Changelog\n"), 2,
+		"the claim is being shown in a code block, not made")
+	assert.Len(t, analyze(t, "CHANGELOG.md", "\t<!-- @generated -->\n# Changelog\n"), 2,
+		"and a tab opens the same block")
+	assert.Empty(t, analyze(t, "CHANGELOG.md", "<!-- @generated -->\n# Changelog\n"),
+		"while the same claim at the margin really does declare it")
+}
+
+// TestAFenceOpensOnTheLineItsListMarkerIsOn pins the shape that kept a block
+// from opening at all. CommonMark puts a list item's content on the marker's own
+// line, so "- ```" opens a code block — goldmark renders one — and requiring the
+// fence to be first meant every line inside it was read as prose, reporting a
+// heading the document was showing.
+func TestAFenceOpensOnTheLineItsListMarkerIsOn(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"bullet":  "- ```\n  # Changelog\n  ```\n",
+		"star":    "* ```\n  # Changelog\n  ```\n",
+		"plus":    "+ ```\n  # Changelog\n  ```\n",
+		"ordered": "1. ```\n   # Changelog\n   ```\n",
+		"paren":   "1) ```\n   # Changelog\n   ```\n",
+		"tilde":   "- ~~~\n  # Changelog\n  ~~~\n",
+	} {
+		assert.Empty(t, analyze(t, "doc.md", source), "%s: the heading is inside the block", name)
+	}
+
+	assert.Len(t, analyze(t, "doc.md", "- item\n\n# Changelog\n\nthings\n"), 1,
+		"while an ordinary list item opens nothing and the heading after it is real")
+	assert.Len(t, analyze(t, "doc.md", "-```\n# Changelog\n```\n"), 1,
+		"and a marker with no space after it is not a marker, so no fence opens behind it")
+}
+
+// TestARawHTMLBlockIsPassedThroughRatherThanRead pins the last block model
+// markdown has. A line beginning with a tag opens a block that runs to the next
+// blank line, and CommonMark emits its contents verbatim — goldmark produces no
+// heading for a `# Changelog` inside one — so reading it as a section reported
+// markup a document was quoting.
+func TestARawHTMLBlockIsPassedThroughRatherThanRead(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"div":     "<div>\n# Changelog\n</div>\n",
+		"details": "<details>\n<summary>x</summary>\n\n",
+		"closing": "</section>\n# Changelog\n",
+	} {
+		for _, diag := range analyze(t, "doc.md", source) {
+			assert.NotContains(t, diag.Message, "section is a changelog", "%s is raw HTML", name)
+		}
+	}
+
+	assert.Len(t, analyze(t, "doc.md", "<div>\nx\n</div>\n\n## Changelog\n\nthings\n"), 1,
+		"and the block ends at the blank line, so the heading below it is read")
+	assert.Len(t, analyze(t, "guide.rst", "<div>\nChangelog\n=========\n"), 1,
+		"the model is markdown's: reStructuredText has no HTML block, and a line of literal "+
+			"text must not swallow the section under it")
+	assert.Len(t, analyze(t, "guide.adoc", "<div>\n== Changelog\n"), 1, "nor does AsciiDoc")
+}

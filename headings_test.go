@@ -234,3 +234,25 @@ func TestBothMarkdownLinkFormsAreReadInATitle(t *testing.T) {
 			"%s: the link is the target, and the title is what is left", name)
 	}
 }
+
+// TestAChangelogTitleIsAnchoredAtBothEnds pins the vocabulary's NARROWNESS,
+// which only half had a test. Dropping the start anchor left the suite green
+// while turning `## Project Changelog` and `## The Unreleased` into findings —
+// headings that merely end with a banned word and are nobody's changelog. The
+// end anchor's equivalent mutation was already killed; this is the other side of
+// the same contract.
+func TestAChangelogTitleIsAnchoredAtBothEnds(t *testing.T) {
+	t.Parallel()
+
+	for _, title := range []string{
+		"## Project Changelog", "## The Unreleased", "## Our Recent Changes", "## Old Version History",
+	} {
+		assert.Empty(t, analyze(t, "README.md", title+"\n\nprose\n"),
+			"%q names something else that ends with the words", title)
+	}
+
+	for _, title := range []string{"## Changelog", "## Unreleased", "## Recent Changes", "## Version History"} {
+		assert.Len(t, analyze(t, "README.md", title+"\n\nprose\n"), 1,
+			"%q is the section itself", title)
+	}
+}
