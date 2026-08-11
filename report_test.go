@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	errs "github.com/gomatic/go-error"
+	goyze "github.com/gomatic/go-yze"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -183,4 +184,48 @@ func TestAReadFailureCannotCrowdOutARealFinding(t *testing.T) {
 	assert.Contains(t, last.Message, "onward are omitted", "the run says so rather than passing over it")
 	assert.NotEmpty(t, last.Path, "a diagnostic the runner cannot attribute is one it can only ignore")
 	assert.Contains(t, last.Message, "11002 changelog findings", "the true total, not the reported one")
+}
+
+// TestEveryDiagnosticCarriesTheSuiteContract pins the fields the stickler
+// consumer reads: without the rule id a finding cannot be softened, baselined
+// or attributed, and without a position it cannot be navigated to. The column
+// is asserted EXACTLY, not merely as positive — every finding here addresses a
+// whole line, so anything but the first column sends a reader to the wrong
+// place.
+func TestEveryDiagnosticCarriesTheSuiteContract(t *testing.T) {
+	t.Parallel()
+
+	diags := analyze(t, "CHANGELOG.md", "## Changelog\n")
+
+	require.Len(t, diags, 2, "the file and its section are separate findings")
+	for _, d := range diags {
+		assert.Equal(t, "yze", d.Tool)
+		assert.Equal(t, docfiles.Rule, d.Rule)
+		assert.Equal(t, "CHANGELOG.md", d.Path)
+		assert.Equal(t, goyze.SeverityError, d.Severity)
+		assert.Positive(t, d.Line)
+		assert.Equal(t, 1, d.Col)
+		assert.NotEmpty(t, d.Message)
+	}
+}
+
+// TestThePublishedContractIsWhatConsumersHold pins the exported constants a
+// consumer actually names, which nothing referenced. A rule id is what a
+// baseline, a ratchet and a `//nolint` all key on, and a category is what the
+// suite filters by — each is frozen at publication and each could be changed
+// with the whole suite green. The sentinel is asserted through THIS package's
+// name rather than the library's, because that is the spelling a consumer
+// imports.
+func TestThePublishedContractIsWhatConsumersHold(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "yze/docfiles", docfiles.Rule, "the rule id every baseline keys on")
+	assert.Equal(t, "docs", docfiles.Category, "the group the suite filters by")
+	// The sentinel a consumer holds must match the error the LIBRARY raises.
+	// Asserting it against itself is a tautology — the shape this suite has had
+	// to remove three times — and would hold even if the constant were a second
+	// one beside the shared sentinel rather than the shared sentinel itself.
+	assert.ErrorIs(t, goyze.ErrNotRegularFile, docfiles.ErrNotRegularFile,
+		"a refusal the discovery raises is one this package's constant names")
+	assert.ErrorIs(t, goyze.ErrTooLarge, docfiles.ErrTooLarge)
 }

@@ -110,29 +110,6 @@ func TestADocumentThatIsNotTextIsAToolFailure(t *testing.T) {
 	assert.ErrorIs(t, err, docfiles.ErrNotText)
 }
 
-// TestEveryDiagnosticCarriesTheSuiteContract pins the fields the stickler
-// consumer reads: without the rule id a finding cannot be softened, baselined
-// or attributed, and without a position it cannot be navigated to. The column
-// is asserted EXACTLY, not merely as positive — every finding here addresses a
-// whole line, so anything but the first column sends a reader to the wrong
-// place.
-func TestEveryDiagnosticCarriesTheSuiteContract(t *testing.T) {
-	t.Parallel()
-
-	diags := analyze(t, "CHANGELOG.md", "## Changelog\n")
-
-	require.Len(t, diags, 2, "the file and its section are separate findings")
-	for _, d := range diags {
-		assert.Equal(t, "yze", d.Tool)
-		assert.Equal(t, docfiles.Rule, d.Rule)
-		assert.Equal(t, "CHANGELOG.md", d.Path)
-		assert.Equal(t, goyze.SeverityError, d.Severity)
-		assert.Positive(t, d.Line)
-		assert.Equal(t, 1, d.Col)
-		assert.NotEmpty(t, d.Message)
-	}
-}
-
 // TestAGeneratedChangelogFileIsExemptToo pins that the exemption covers the
 // FILE, not only its sections. Exempting only sections reported a
 // machine-written CHANGELOG.md as a hand-maintained changelog — recommending
