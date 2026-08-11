@@ -16,6 +16,20 @@ import (
 	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
+// TestMain neutralises the one seam that reaches outside this process. The real
+// ignore filter runs `git check-ignore`, so every test here spawned git —
+// twenty-four processes across the package — and the filter's verdict then
+// depended on whatever repository the temporary directory happened to sit in.
+// It fails open, so nothing was flaky; it was simply never exercised
+// deterministically, and a unit test that shells out is an integration test
+// wearing one's name.
+func TestMain(m *testing.M) {
+	files.CheckIgnore = func(goyze.RepoDir, []string) (map[string]bool, error) {
+		return map[string]bool{}, nil
+	}
+	os.Exit(m.Run())
+}
+
 // swapStdout captures what the command writes, restoring the real writer after
 // so tests cannot leak into one another.
 func swapStdout(t *testing.T) *bytes.Buffer {

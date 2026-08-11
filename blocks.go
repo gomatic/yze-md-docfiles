@@ -162,10 +162,10 @@ func leavesCommentOpen(text line) bool {
 // wedged the gate for two minutes.
 func codeSpans(text line) map[int]width {
 	runs := backtickRuns(text)
-	next := runsByLength(runs)
+	next := searching(runsByLength(runs))
 	spans := map[int]width{}
 	for i := runIndex(0); int(i) < len(runs); i++ {
-		closer, isClosed := nextRunOfLength(next, runs, i)
+		closer, isClosed := next.after(runs, i)
 		if !isClosed {
 			// An unclosed run is literal text, and so is everything after it
 			// until some later run closes.
@@ -208,15 +208,46 @@ func runsByLength(runs []backtickRunAt) map[runLength][]int {
 	return byLength
 }
 
-// nextRunOfLength is the first run after i with the same length — the closer
-// CommonMark requires, which must match exactly.
-func nextRunOfLength(byLength map[runLength][]int, runs []backtickRunAt, opener runIndex) (runIndex, bool) {
-	for _, candidate := range byLength[runs[opener].length] {
-		if runIndex(candidate) > opener {
-			return runIndex(candidate), true
-		}
+// search finds each run's closer, remembering how far it has already looked at
+// every length.
+//
+// The cursor is what makes the whole scan linear, and its absence is why the
+// one-pass rewrite was still quadratic on the shape it was written for. Indexing
+// by length turned "scan the line again" into "scan this length's runs again",
+// which is the same cost when a line is nothing BUT runs of one length: ordinary
+// prose with code spans has openers at candidate positions 0, 2, 4, …, and each
+// restarted from the front. A megabyte of `x` spans took 39 seconds — 112 times
+// slower than the pathological shape the regression test uses, at half the size
+// — so an eight-megabyte file, which the size limit deliberately admits, was
+// forty minutes of CPU in one call.
+//
+// A cursor never needs to go back: codeSpans asks about openers in increasing
+// order, and a closer already passed can never be the answer for a later one.
+type search struct {
+	byLength map[runLength][]int
+	cursor   map[runLength]int
+}
+
+// searching starts a search over runs already indexed by length.
+func searching(byLength map[runLength][]int) search {
+	return search{byLength: byLength, cursor: map[runLength]int{}}
+}
+
+// after is the first run past opener whose length matches — the closer
+// CommonMark asks for, which is a backtick string of the same length and no
+// other.
+func (s search) after(runs []backtickRunAt, opener runIndex) (runIndex, bool) {
+	length := runs[opener].length
+	candidates := s.byLength[length]
+	at := s.cursor[length]
+	for at < len(candidates) && runIndex(candidates[at]) <= opener {
+		at++
 	}
-	return 0, false
+	s.cursor[length] = at
+	if at == len(candidates) {
+		return 0, false
+	}
+	return runIndex(candidates[at]), true
 }
 
 // runIndex is a position in the list of backtick runs on one line.

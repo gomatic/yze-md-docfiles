@@ -209,3 +209,92 @@ func TestTheRunTruncationNamesTheFirstFileItDropped(t *testing.T) {
 	assert.Contains(t, last.Message, "d09.md")
 	assert.Contains(t, last.Message, "16800 changelog findings", "and the true total across the run")
 }
+
+// TestADocumentExactlyAtItsCapIsNotTruncated pins the per-document boundary. A
+// document with exactly as many findings as the cap allows has lost nothing, so
+// appending a notice saying "1000 findings, of which 1000 are reported" tells a
+// reader something was withheld when nothing was. The test above it uses five
+// thousand and the one below twelve; neither sits at the edge, which is the
+// argument the size-limit test already makes for itself.
+func TestADocumentExactlyAtItsCapIsNotTruncated(t *testing.T) {
+	t.Parallel()
+	atCap := strings.Repeat("## Changelog\n", 1000)
+
+	diags, err := docfiles.Diagnostics("doc.md", docfiles.Source(atCap))
+
+	require.NoError(t, err)
+	require.Len(t, diags, 1000, "every finding, and no notice")
+	for _, diag := range diags {
+		assert.NotContains(t, diag.Message, "of which", "nothing was withheld, so nothing says it was")
+	}
+}
+
+// TestTheRunTruncationNamesTheFileWhoseFindingsWereActuallyDropped pins the run
+// boundary at an EXACT fit, which is where the attribution goes wrong. Twenty
+// documents of five hundred findings fill the run's allowance precisely; the
+// next document is the first to lose anything, and naming the one before it
+// reports "findings from d19.md onward are omitted" when every one of d19.md's
+// was reported.
+func TestTheRunTruncationNamesTheFileWhoseFindingsWereActuallyDropped(t *testing.T) {
+	t.Parallel()
+	full := strings.Repeat("## Changelog\n", 500)
+	files := make([]string, 0, 21)
+	contents := map[string]string{}
+	for i := range 20 {
+		name := fmt.Sprintf("d%02d.md", i)
+		files = append(files, name)
+		contents[name] = full
+	}
+	files = append(files, "extra.md")
+	contents["extra.md"] = "## Changelog\n"
+
+	report := docfiles.Report(reader(contents), files)
+
+	last := report.Diagnostics[len(report.Diagnostics)-1]
+	assert.Contains(t, last.Message, "onward are omitted")
+	assert.EqualValues(t, "extra.md", last.Path, "the first file that actually lost a finding")
+}
+
+// TestAnUnparseableDocumentCountsAsOneFinding pins the count on the branch
+// beside the one that IS pinned. A file that cannot be read counts as one
+// finding rather than none — its sibling says so and has a test — and a file
+// that cannot be DECODED reached the same conclusion with nothing behind it, so
+// the run's reported total could silently lose every such file.
+func TestAnUnparseableDocumentCountsAsOneFinding(t *testing.T) {
+	t.Parallel()
+	contents := map[string]string{"bad.md": "\xff\xfe not utf-8 \xff", "good.md": "## Changelog\n"}
+
+	report := docfiles.Report(reader(contents), []string{"bad.md", "good.md"})
+
+	require.Len(t, report.Diagnostics, 2, "the undecodable file is one finding, not none")
+	assert.Contains(t, report.Diagnostics[0].Message, "bad.md")
+}
+
+// TestAnUndecodableDocumentIsCountedInTheRunTotal pins the count where it is
+// actually observable. The run's reported total is the TRUE number of findings,
+// not the number carried, so a file that contributes one finding and no
+// diagnostics past the cap has to be counted like any other — the branch beside
+// it, an unreadable file, is pinned and this one reached the same conclusion
+// with nothing behind it.
+func TestAnUndecodableDocumentIsCountedInTheRunTotal(t *testing.T) {
+	t.Parallel()
+	full := strings.Repeat("## Changelog\n", 500)
+	files := make([]string, 0, 24)
+	contents := map[string]string{}
+	for i := range 21 {
+		name := fmt.Sprintf("d%02d.md", i)
+		files = append(files, name)
+		contents[name] = full
+	}
+	for _, name := range []string{"bad-a.md", "bad-b.md"} {
+		files = append(files, name)
+		contents[name] = "\xff\xfe not utf-8 \xff"
+	}
+
+	report := docfiles.Report(reader(contents), files)
+
+	last := report.Diagnostics[len(report.Diagnostics)-1]
+	assert.Contains(t, last.Message, "onward are omitted")
+	assert.Contains(t, last.Message, "10502 ",
+		"twenty-one documents of five hundred, plus one for each file nobody could decode")
+}

@@ -87,42 +87,60 @@ func TestCodeSpansFindsEveryClosedSpanAndNoOpenOne(t *testing.T) {
 	}
 }
 
-// TestCodeSpansIsLinearInTheLineLength pins the COST, not just the answer. The
-// spans used to be answered per position by scanning forward for a matching run,
-// which rescans the whole line for every run that never closes — so a line of
-// runs of strictly increasing length, which closes none of them, was superlinear:
-// eight megabytes of it, a size the limit deliberately admits, took 27 seconds
-// and reported nothing.
+// TestCodeSpansIsLinearInTheLineLength pins the COST, not just the answer, on
+// BOTH shapes that made it superlinear — and the second is the one that matters,
+// because it is what ordinary prose looks like.
+//
+// Answering per position by scanning forward rescans the whole line for every
+// run that never closes, so runs of strictly increasing length were superlinear:
+// eight megabytes took 27 seconds and reported nothing.
+//
+// Indexing the runs by length fixed that shape and not the other one. A line
+// that is nothing but code spans has every run at the SAME length, so the
+// openers sit at candidate positions 0, 2, 4, … and each restarted from the
+// front of that length's list — a megabyte took 39 seconds, 112 times slower
+// than the increasing-length line at half the size. A test named for linearity
+// pinned the old bug's absence rather than the property in its name.
 func TestCodeSpansIsLinearInTheLineLength(t *testing.T) {
 	t.Parallel()
-	var builder strings.Builder
-	for run := 1; builder.Len() < 1<<20; run++ {
-		_, _ = builder.WriteString(strings.Repeat("`", run) + "x")
-	}
-	hostile := line(builder.String())
 
-	done := make(chan bool, 1)
-	go func() { done <- leavesCommentOpen(hostile) }()
+	for name, hostile := range map[string]line{
+		"increasing runs": increasingRuns(1 << 20),
+		"equal runs":      line(strings.Repeat("`x", 1<<19)),
+	} {
+		done := make(chan bool, 1)
+		go func() { done <- leavesCommentOpen(hostile) }()
 
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("scanning one line did not finish")
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: scanning one line did not finish", name)
+		}
 	}
 }
 
-// TestNextRunOfLengthMatchesOnlyAnExactLength pins the CommonMark rule directly:
+// increasingRuns is a line of backtick runs of strictly increasing length, which
+// closes none of them.
+func increasingRuns(size int) line {
+	var builder strings.Builder
+	for run := 1; builder.Len() < size; run++ {
+		_, _ = builder.WriteString(strings.Repeat("`", run) + "x")
+	}
+	return line(builder.String())
+}
+
+// TestTheCloserMatchesOnlyAnExactLength pins the CommonMark rule directly:
 // a span closes on a backtick string of EXACTLY the same length, so a longer or
 // shorter run is not a closer and the span stays open.
-func TestNextRunOfLengthMatchesOnlyAnExactLength(t *testing.T) {
+func TestTheCloserMatchesOnlyAnExactLength(t *testing.T) {
 	t.Parallel()
 	runs := backtickRuns(line("`a``b`c```"))
 	byLength := runsByLength(runs)
 
-	closer, isClosed := nextRunOfLength(byLength, runs, 0)
+	closer, isClosed := searching(byLength).after(runs, 0)
 	require.True(t, isClosed, "the one-backtick run closes on the next one-backtick run")
 	assert.Equal(t, runIndex(2), closer, "skipping the two-backtick run between them")
 
-	_, isTwoClosed := nextRunOfLength(byLength, runs, 1)
+	_, isTwoClosed := searching(byLength).after(runs, 1)
 	assert.False(t, isTwoClosed, "and the two-backtick run finds no two-backtick closer")
 }

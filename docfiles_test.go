@@ -257,3 +257,12 @@ func TestChangelogFileNameIsUnambiguousInEverySpelling(t *testing.T) {
 
 	assert.Empty(t, analyze(t, "docs/changelog policy.md", ""), "and a document ABOUT one is still kept")
 }
+
+// repeated is a run of one character, for building an underline or a delimiter.
+func repeated(of string, times int) string {
+	run := ""
+	for range times {
+		run += of
+	}
+	return run
+}

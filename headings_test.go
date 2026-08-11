@@ -1,6 +1,7 @@
 package docfiles_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,21 +123,6 @@ func TestReStructuredTextAdornmentsUnderlineSectionsRatherThanFence(t *testing.T
 	assert.Empty(t, analyze(t, "guide.md", rst), "in markdown the same text IS a fence, and the heading is inside it")
 }
 
-// TestEveryAdornmentCharacterUnderlinesASection pins the vocabulary of the
-// two-line form. reStructuredText lets any repeated punctuation underline a
-// title, so a rule that knew only markdown's two characters missed most RST
-// headings anyone actually writes.
-func TestEveryAdornmentCharacterUnderlinesASection(t *testing.T) {
-	t.Parallel()
-
-	for _, rule := range []string{"=========", "---------", "~~~~~~~~~", "^^^^^^^^^", `"""""""""`, "+++++++++", "#########", "*********"} {
-		assert.Len(t, analyze(t, "guide.rst", "Changelog\n"+rule+"\n\n- entry\n"), 1,
-			"%s underlines a section", rule)
-	}
-
-	assert.Empty(t, analyze(t, "guide.md", "Changelog\n~~~~~~~~~\n"), "markdown has only two of them")
-}
-
 // TestAnIndentedUnderlineIsNotAHeading pins the indentation bound on the
 // two-line form, which the marker-run form already had.
 func TestAnIndentedUnderlineIsNotAHeading(t *testing.T) {
@@ -212,5 +198,39 @@ func TestTheLinkedKeepAChangelogSpellingIsRead(t *testing.T) {
 		"## See [the changelog](CHANGELOG.md) for details",
 	} {
 		assert.Empty(t, analyze(t, "README.md", title+"\n"), "%s is not one", title)
+	}
+}
+
+// TestEveryAdornmentCharacterUnderlinesASection pins the whole reStructuredText
+// vocabulary rather than a sample of it. Five of the thirteen had nothing behind
+// them: each could be dropped from the pattern with the suite still green, and
+// each drop makes a real `Changelog` heading invisible — which is not a missing
+// finding but a silent pass on the one thing this rule looks for.
+func TestEveryAdornmentCharacterUnderlinesASection(t *testing.T) {
+	t.Parallel()
+
+	for _, adornment := range []string{"=", "-", "~", "^", `"`, "+", "#", "*", "'", "`", ":", ".", "_"} {
+		source := fmt.Sprintf("Guide\n=====\n\nChangelog\n%s\n\nrecent things\n", repeated(adornment, 9))
+
+		assert.Len(t, analyze(t, "guide.rst", source), 1,
+			"a section underlined with %q is a section", adornment)
+	}
+}
+
+// TestBothMarkdownLinkFormsAreReadInATitle pins the reference spelling beside
+// the inline one. `[Unreleased](…/compare)` and `[Unreleased][unreleased]`
+// render identically and Keep a Changelog's own template has used each, so
+// reading one and not the other left the same heading reported or silent
+// according to which spelling its author copied.
+func TestBothMarkdownLinkFormsAreReadInATitle(t *testing.T) {
+	t.Parallel()
+
+	for name, title := range map[string]string{
+		"inline":    "## [Unreleased](https://example.test/compare/v1...HEAD)",
+		"reference": "## [Unreleased][unreleased]",
+		"plain":     "## Unreleased",
+	} {
+		assert.Len(t, analyze(t, "notes.md", title+"\n\nrecent things\n"), 1,
+			"%s: the link is the target, and the title is what is left", name)
 	}
 }

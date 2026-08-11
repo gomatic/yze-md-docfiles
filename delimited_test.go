@@ -6,6 +6,7 @@ package docfiles_test
 // believed to disagree only about underlines.
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -174,4 +175,20 @@ func TestATitleCandidateIsNotItselfADelimiter(t *testing.T) {
 
 	assert.Empty(t, analyze(t, "guide.adoc", "Title\n=====\n----\n== Changelog\n----\n"),
 		"the second delimiter opens a block rather than underlining the first")
+}
+
+// TestEveryDelimiterOpensABlock pins AsciiDoc's whole delimiter vocabulary, for
+// the same reason and in the same direction. A delimiter this rule does not know
+// fails to suppress the example inside it, so a document SHOWING a changelog
+// heading is reported as having one.
+func TestEveryDelimiterOpensABlock(t *testing.T) {
+	t.Parallel()
+
+	for _, marker := range []string{"-", "=", ".", "*", "_", "+", "~", "/"} {
+		fence := repeated(marker, 4)
+		shown := fmt.Sprintf(".An example\n%s\n== Changelog\n%s\n", fence, fence)
+
+		assert.Empty(t, analyze(t, "guide.adoc", shown),
+			"a %q block holds an example, not a section", marker)
+	}
 }

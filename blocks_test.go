@@ -201,3 +201,31 @@ func TestAClosingRunMustBeExactlyAsLongAsItsOpener(t *testing.T) {
 		"a single backtick does not close a double run, so those backticks are literal "+
 			"text and the opener between them is real")
 }
+
+// TestAnIndentedRunOfDelimiterCharactersOpensNoBlock pins the column-zero rule
+// on the OPENING half. AsciiDoc and RST require a delimiter at column zero; an
+// indented run is literal content, and reading one as a delimiter opens a
+// phantom block that swallows the real section beneath it — a silent pass
+// produced by four spaces. The closing half of the same pair was pinned; this
+// half had nothing behind it.
+func TestAnIndentedRunOfDelimiterCharactersOpensNoBlock(t *testing.T) {
+	t.Parallel()
+
+	assert.Len(t, analyze(t, "doc.adoc", "    ----\n== Changelog\n\nrecent things\n"), 1,
+		"the indented run is content, so the section below it is a section")
+	assert.Empty(t, analyze(t, "doc.adoc", "----\n== Changelog\n----\n"),
+		"while a delimiter at column zero really does hold an example")
+}
+
+// TestATabIndentedLineIsLiteralContent pins the tab half of the indent test. RST
+// makes a tab-indented line a literal block, so the text in it is quoted rather
+// than written — and reading it as a title invents a section out of an example
+// somebody was showing.
+func TestATabIndentedLineIsLiteralContent(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, analyze(t, "doc.rst", "para\n\n\tChangelog\n=========\n"),
+		"a tab-indented line is quoted content, not a title")
+	assert.Len(t, analyze(t, "doc.rst", "para\n\nChangelog\n=========\n"), 1,
+		"while the same text at column zero is one")
+}
