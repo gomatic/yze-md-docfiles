@@ -69,7 +69,10 @@ func TestReportContainsAReadFailureToItsOwnFile(t *testing.T) {
 	}
 	assert.Contains(t, paths["locked.md"], "cannot be analyzed as a document")
 	assert.Contains(t, paths["locked.md"], docfiles.ErrReadFile.Error())
-	assert.ErrorIs(t, docfiles.ErrReadFile.With(errUnreadable, "path", "locked.md"), docfiles.ErrReadFile)
+	assert.Contains(t, paths["locked.md"], errUnreadable.Error(),
+		"and the CAUSE, so a locked file is distinguishable from a malformed one — asserting that "+
+			"ErrReadFile.With matches ErrReadFile is a claim about the error helper and measures "+
+			"nothing about this report, which returns no error at all")
 	assert.Contains(t, paths["notes.md"], "section is a changelog", "its neighbour keeps its finding")
 }
 
