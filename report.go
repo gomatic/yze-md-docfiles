@@ -39,9 +39,11 @@ const unreadableMessage = "cannot be analyzed as a document: %v; the gate cannot
 // repository no analyzer ever looked at.
 const ErrNoPaths errs.Const = "no paths to analyze"
 
-// Unreadable is the finding for each tree the walk could not enter. A directory
-// the gate cannot descend into is reported rather than passed over, so nothing
-// is lost in silence and the run still yields every other file's findings.
+// Unreadable is the finding for each path the walk could not read: a directory
+// it could not enter, and a file it could not have read had it tried — a FIFO,
+// a device, a link resolving to nothing. Both are REPORTED rather than skipped,
+// because a path the gate cannot open is where an unchecked one would hide, and
+// the run still yields every other file's findings.
 func Unreadable(paths []string) []goyze.Diagnostic {
 	diags := make([]goyze.Diagnostic, 0, len(paths))
 	for _, path := range paths {
