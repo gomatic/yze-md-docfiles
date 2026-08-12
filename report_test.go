@@ -68,11 +68,20 @@ func TestReportContainsAReadFailureToItsOwnFile(t *testing.T) {
 		paths[d.Path] += d.Message
 	}
 	assert.Contains(t, paths["locked.md"], "cannot be analyzed as a document")
-	assert.Contains(t, paths["locked.md"], docfiles.ErrReadFile.Error())
+	// The read failure is asserted as its LITERAL text, from outside the
+	// package, rather than through a sentinel. The sentinel behind it is
+	// unexported precisely because no caller can receive it — reaching for it
+	// from an internal test would assert that the message contains the constant
+	// interpolated into the message, which holds however useless the constant's
+	// wording becomes. What a consumer of this report actually gets is the
+	// string, so the string is the contract, and rewording it should fail a test
+	// rather than pass one. It is the same shape as the assertion above, which
+	// has always pinned the surrounding message's literal text.
+	assert.Contains(t, paths["locked.md"], "cannot read documentation file")
 	assert.Contains(t, paths["locked.md"], errUnreadable.Error(),
 		"and the CAUSE, so a locked file is distinguishable from a malformed one — asserting that "+
-			"ErrReadFile.With matches ErrReadFile is a claim about the error helper and measures "+
-			"nothing about this report, which returns no error at all")
+			"the sentinel's `.With` matches the sentinel is a claim about the error helper and "+
+			"measures nothing about this report, which returns no error at all")
 	assert.Contains(t, paths["notes.md"], "section is a changelog", "its neighbour keeps its finding")
 }
 

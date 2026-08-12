@@ -7,8 +7,19 @@ import (
 	goyze "github.com/gomatic/go-yze"
 )
 
-// ErrReadFile reports that a document could not be read.
-const ErrReadFile errs.Const = "cannot read documentation file"
+// errReadFile names the read failure carried inside the finding an unreadable
+// document produces.
+//
+// It is UNEXPORTED because it is not an error any caller can receive. It is
+// interpolated into [unreadableMessage] by [unreadable], which returns a
+// diagnostic; [Report] returns no error at all. Exported, it advertised a
+// sentinel that `errors.Is` could never match, and the only test that could
+// name it had to build the expected value out of the constant it compared
+// against — a claim about the error helper, not about this package, and one
+// deleted for measuring nothing. A sentinel with no consumer is a contract the
+// package never fulfills; the read failure's contract is the MESSAGE, which is
+// what the report actually carries and what the test now pins.
+const errReadFile errs.Const = "cannot read documentation file"
 
 // ErrNotRegularFile reports a named path whose contents cannot be read as a
 // document. It IS the shared sentinel, not a second one beside it: the refusal
@@ -118,7 +129,7 @@ func runTruncation(at Path, found findingCount) goyze.Diagnostic {
 
 // unreadable is the finding for a document the analyzer could not open at all.
 func unreadable(file Path, cause error) goyze.Diagnostic {
-	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, ErrReadFile.With(cause, "path", string(file)))))
+	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, errReadFile.With(cause, "path", string(file)))))
 }
 
 // documentDiagnostics is one document's findings, with an unreadable document
