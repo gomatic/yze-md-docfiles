@@ -1,17 +1,22 @@
 package main
 
-// What this command claims: what counts as a document, and whose prose is
-// somebody else's. Everything else about turning arguments into files — the
-// symlinked root, the identity of a path reached two ways, the tree that cannot
-// be read, the size bound, the ignore filter — is the shared discovery's,
-// because three analyzers answering those questions separately answered them
-// differently.
+// What this command claims: whose prose is somebody else's. Everything else
+// about turning arguments into files — the symlinked root, the identity of a
+// path reached two ways, the tree that cannot be read, the size bound, the
+// ignore filter — is the shared discovery's, because three analyzers answering
+// those questions separately answered them differently.
+//
+// WHICH FILES ARE DOCUMENTS is not decided here either, and used to be. The walk
+// kept its own list of extensions and its own list of changelog stems beside the
+// pattern in the library, which is two vocabularies for one question: a spelling
+// admitted in the library was invisible to every real invocation until somebody
+// remembered to add it here as well, and nothing would have failed in between.
+// The predicate is the library's now.
 
 import (
-	"path/filepath"
-	"strings"
-
 	goyze "github.com/gomatic/go-yze"
+
+	docfiles "github.com/gomatic/yze-md-docfiles"
 )
 
 // discovery is this command's file discovery: the shared walk, told what a
@@ -39,32 +44,9 @@ func pruned(name goyze.DirName) bool {
 	return false
 }
 
-// documentExtensions are the suffixes prose is written in.
-var documentExtensions = map[string]bool{
-	".md": true, ".markdown": true, ".txt": true, ".rst": true, ".adoc": true,
-}
-
-// changelogStems are the file names that are a changelog whatever they are
-// called next. They are claimed WITHOUT an extension because the canonical Unix
-// spelling has none: a bare `CHANGELOG` is the most common form of the very
-// thing this rule bans, and requiring an extension made it invisible to every
-// real invocation while the test suite advertised it as covered.
-var changelogStems = map[string]bool{
-	"changelog": true, "change-log": true, "change_log": true, "change log": true,
-	"changes": true, "releasenotes": true, "release-notes": true, "release_notes": true,
-	"release notes": true,
-}
-
-// isDocument reports a path this rule reads: prose by its extension, or a
-// changelog by its name whether or not it has one.
+// isDocument reports a path this rule reads, which is the library's own
+// question: prose by its extension, or a changelog by its name whether or not it
+// has one.
 func isDocument(path goyze.FilePath) bool {
-	base := strings.ToLower(filepath.Base(string(path)))
-	if documentExtensions[filepath.Ext(base)] {
-		return true
-	}
-	// Every changelog stem is dotless, so a name reaching here with an
-	// extension cannot match one — the guard that used to sit in front of this
-	// lookup could never be false, which is an unreachable condition dressed as
-	// a check.
-	return changelogStems[base]
+	return docfiles.Claims(docfiles.Path(path))
 }

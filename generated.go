@@ -79,13 +79,19 @@ var commentedExtensions = map[extension]bool{
 	markdownLongExt:  true,
 	plainTextExt:     false,
 	extensionlessExt: false,
-	// The two markup spellings are judged by NAME alone and are never parsed,
-	// so this question never reaches them. They answer anyway: a table keyed by
+	// MDX has no HTML comment. `<!-- -->` is not valid JSX, so a claim written
+	// that way in an `.mdx` file is a syntax error a reader's build shows them
+	// rather than an invisible statement of authorship — and accepting it would
+	// be accepting a line nobody can hide behind.
+	markdownJSXExt: false,
+	// The markup spellings are judged by NAME alone and are never parsed, so
+	// this question never reaches them. They answer anyway: a table keyed by
 	// this type that skipped a member would leave the next reader unable to tell
 	// an omission from a decision, which is the failure every table in this
 	// package is written against.
 	restructuredExt: false,
 	asciidocExt:     false,
+	asciidocLongExt: false,
 }
 
 // declaresGenerated reports one top-level block that IS a generator's claim.

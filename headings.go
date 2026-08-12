@@ -25,15 +25,6 @@ type lineNumber int
 // whatever a generator wrote there.
 const byteOrderMark = "\ufeff"
 
-// changelogFileName is the file this rule bans, in the spellings it is written
-// in: CHANGELOG, ChangeLog, changelog, CHANGES, and the hyphenated and
-// underscored variants, and the spaced ones: `Release Notes.md` is the spelling
-// a person types, and the heading half already admitted the space while this
-// half did not — so the doc's own example of an unambiguous FILE name was the
-// one shape neither half caught. The name must be the WHOLE stem —
-// `changelog-policy.md` is a document ABOUT the policy, which is worth keeping.
-var changelogFileName = regexp.MustCompile(`^(change[-_ ]?log|changes|release[-_ ]?notes)$`)
-
 // changelogTitle is a heading that opens a changelog section. The alternatives
 // are spelled out rather than matched loosely, because "Change Process" is not
 // a changelog and a rule that guessed would report it — and the plural

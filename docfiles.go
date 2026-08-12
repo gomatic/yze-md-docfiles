@@ -32,13 +32,52 @@
 // about a project's history — nor a source file named changelog.go, which is
 // code that manages the concept rather than an instance of it.
 //
-// Three names were considered and REFUSED on the measurement. A bare `Changes`
-// or `History` heading is ordinary prose in a design document. `Release Notes`
-// as a heading has three fleet instances and all three are legitimate — Go's
-// own doc ABOUT writing release notes, and two docs-site index sections — so it
-// is banned as a file name, where it is unambiguous, and left alone as a
-// heading. A rule that fires on any of those is a rule its own repository
-// cannot document itself under.
+// # WHAT WAS REFUSED, AND WHAT IT COST
+//
+// Every spelling was counted across the fleet before the decision, and the
+// refusals matter as much as the admissions. A rule that fires on any of these
+// is a rule its own repository cannot document itself under.
+//
+// Refused on a LEGITIMATE INSTANCE, which is the strongest reason there is:
+//
+//   - A bare `Changes` or `History` HEADING — ordinary prose in a design
+//     document.
+//   - `Release Notes` as a HEADING — three fleet instances, all three
+//     legitimate: Go's own documentation ABOUT writing release notes, and two
+//     docs-site index sections. It is banned as a file NAME, where it is
+//     unambiguous, and left alone as a heading.
+//   - `history.md` — two fleet instances, both genuine Hugo content pages about
+//     a project's history.
+//   - `changelog.go` — code that manages the concept rather than an instance of
+//     it. `changelog_test.go` beside it is the fleet's only DECORATED instance,
+//     and it is code twice over.
+//   - A decoration that is a WORD: `changelog-policy.md` is a document about the
+//     policy. Loosening the whole-stem anchor to a prefix or a substring reports
+//     it, and that is why the anchor holds.
+//
+// Refused at ZERO instances, deliberately, and recorded so a later measurement
+// can revisit rather than rediscover (all counts 2026-08-12, over 647 repository
+// trees and 35,663 walked files, the work account excluded):
+//
+//   - `NEWS.md` — 0 files. It is the GNU and R ecosystems' changelog, and it is
+//     also an ordinary page title on a website, in a fleet built out of Hugo
+//     sites. That is precisely the shape `history.md` was refused for, on two
+//     real instances, and admitting the one while refusing the other would make
+//     the rule's narrowness a matter of which word came up first.
+//   - `CHANGELOG.old` — 0 files. Admitting it means admitting a backup
+//     vocabulary, and that vocabulary has to cover `changelog.md.bak` too — the
+//     commoner spelling, already pinned unreported. Half a vocabulary is worse
+//     than none: the rule's answer would depend on which backup convention an
+//     author happened to use.
+//
+// Admitted at ZERO instances, because each is a real spelling of the banned
+// thing with no legitimate document standing in its way: the numeric decoration
+// (`CHANGELOG-1.29.md`, Kubernetes' literal layout; `CHANGELOG_2024.md`), the
+// dotfile spelling (`.changelog.md`), the changelog kept as a DIRECTORY
+// (`changelog/index.md` — 0 such directories fleet-wide), and the two missing
+// extensions `.mdx` and `.asciidoc` — of which the fleet holds 0 files of ANY
+// name. Each admits a spelling rather than reporting one, which is the whole
+// point of measuring first.
 //
 // # THE TWO HALVES READ DIFFERENT SETS OF FILES
 //
@@ -82,8 +121,6 @@
 package docfiles
 
 import (
-	"fmt"
-	"path"
 	"strings"
 	"unicode/utf8"
 
@@ -127,9 +164,6 @@ const fileMessage = "%s must not be committed to a repository, whoever or whatev
 // headingMessage formats a banned-section finding.
 const headingMessage = "the %q section is a changelog inside another document; " +
 	"git history already records this, and the copy is the one that goes stale"
-
-// baseName is a file's final path element.
-type baseName string
 
 // Diagnostics reports the changelog findings for one document: the file itself
 // when its name is a changelog, and every heading that opens one.
@@ -202,24 +236,6 @@ func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCoun
 	return diags, held, nil
 }
 
-// nameAndExtension is a path's final element and its lower-cased extension.
-func nameAndExtension(at Path) (baseName, extension) {
-	base := path.Base(string(at))
-	return baseName(base), extension(strings.ToLower(path.Ext(base)))
-}
-
-// fileDiagnostics reports the file when its name is a changelog.
-func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
-	if !nameExtensions[ext] {
-		return nil
-	}
-	stem := strings.TrimSuffix(strings.ToLower(string(base)), string(ext))
-	if !changelogFileName.MatchString(stem) {
-		return nil
-	}
-	return []goyze.Diagnostic{diagnostic(at, 1, finding(fmt.Sprintf(fileMessage, base)))}
-}
-
 // diagnostic builds one finding at a line. Every finding of this rule addresses
 // a whole line — a file by its name, a section by its heading — so the column
 // is always the first, which is where an editor should land.
@@ -235,12 +251,9 @@ func diagnostic(at Path, line lineNumber, message finding) goyze.Diagnostic {
 	}
 }
 
-// nameFindings is everything this rule can say about a path knowing only its
-// name — which is every reader with no bytes to offer: the walk reporting a
-// path it could not enter, and the reader refusing a file it could not open.
-// One function serves all three callers, so the two byteless readers and the
-// ordinary read reach one conclusion about one name.
-func nameFindings(at Path) []goyze.Diagnostic {
-	base, ext := nameAndExtension(at)
-	return fileDiagnostics(at, base, ext)
-}
+// directoryMessage formats the finding for a document inside a changelog
+// DIRECTORY. It names the directory as well as the file, because the file's own
+// name is innocent — `index.md` says nothing at all — and an author reading a
+// finding about `index.md` would have no idea what to do with it.
+const directoryMessage = "%s sits in the %s directory, which is a changelog kept as a directory and must not be " +
+	"committed to a repository; git history is the changelog, and release notes belong to the tag and the release"
