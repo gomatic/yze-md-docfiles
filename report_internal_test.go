@@ -23,6 +23,22 @@ func TestFileFindingsContainsAReadFailureToItsOwnFile(t *testing.T) {
 	assert.Contains(t, found[0].Message, "cannot be analyzed as a document")
 }
 
+// TestReasonIsTheCauseOrUnopenableWhenThereIsNone names both arms of reason,
+// which its doc comment claims are each reached, and the constant the first arm
+// returns. Only one of them had anything behind it:
+// every read and decode failure carries a cause, so the second arm is walked by
+// most of this file's tests, while the first is reached only through Unreadable
+// — the walk's own report of a path it did not attempt to open. Left
+// unasserted, a nil cause would have rendered `%!s(<nil>)` where the reason
+// belongs, and no test in the package would have seen it.
+func TestReasonIsTheCauseOrUnopenableWhenThereIsNone(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, unopenable, reason(nil), "a path never opened has no error to quote")
+	assert.Equal(t, os.ErrPermission.Error(), reason(os.ErrPermission), "and a real cause is quoted verbatim")
+	assert.NotContains(t, reason(nil), "%!", "least of all a formatting verb")
+}
+
 // TestRunTruncationAlwaysCarriesAPath names the property the doc comment states:
 // a diagnostic with an empty path is one the runner cannot attribute, baseline
 // or ratchet, so this one is attributed to the file its run stopped at.

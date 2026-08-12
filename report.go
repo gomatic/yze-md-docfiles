@@ -7,20 +7,6 @@ import (
 	goyze "github.com/gomatic/go-yze"
 )
 
-// errReadFile names the read failure carried inside the finding an unreadable
-// document produces.
-//
-// It is UNEXPORTED because it is not an error any caller can receive. It is
-// interpolated into [unreadableMessage] by [unreadable], which returns a
-// diagnostic; [Report] returns no error at all. Exported, it advertised a
-// sentinel that `errors.Is` could never match, and the only test that could
-// name it had to build the expected value out of the constant it compared
-// against — a claim about the error helper, not about this package, and one
-// deleted for measuring nothing. A sentinel with no consumer is a contract the
-// package never fulfills; the read failure's contract is the MESSAGE, which is
-// what the report actually carries and what the test now pins.
-const errReadFile errs.Const = "cannot read documentation file"
-
 // ErrNotRegularFile reports a named path whose contents cannot be read as a
 // document. It IS the shared sentinel, not a second one beside it: the refusal
 // is raised by the discovery this command walks with, and nothing in this module
@@ -36,8 +22,25 @@ type FileReader func(path string) ([]byte, error)
 
 // unreadableMessage formats the finding for a document that could not be read
 // as prose.
-const unreadableMessage = "cannot be analyzed as a document: %v; the gate cannot vouch for a file it could not " +
+//
+// It does NOT name the path. [goyze.Diagnostic.Path] already carries it in a
+// field a runner can read, and interpolating it here said the same thing twice
+// — once structured, once buried in a sentence — which is the duplication the
+// file finding's own message was corrected for.
+//
+// The reason it interpolates is a STRING, not an error. No caller receives an
+// error for this condition: [unreadable] returns a diagnostic and [Report]
+// returns a report. It used to be assembled from an `errs.Const` that no
+// `errors.Is` could reach, which is message text wearing an error type — and
+// yze/errtested was right to say so.
+const unreadableMessage = "cannot be analyzed as a document: %s; the gate cannot vouch for a file it could not " +
 	"read, so this is reported rather than passed over"
+
+// unopenable is the reason given for a path the walk never attempted to open —
+// a directory it could not enter, a FIFO, a device, a link resolving to
+// nothing. There is genuinely no error to quote for those, and formatting a nil
+// one would show a reader the verb `%!s(<nil>)` where the reason belongs.
+const unopenable = "the walk could not read this path"
 
 // A document that cannot be read, or whose bytes are not text, becomes ONE
 // finding against that file and the run continues — so a single blob
@@ -127,9 +130,28 @@ func runTruncation(at Path, found findingCount) goyze.Diagnostic {
 	return diagnostic(at, 1, finding(fmt.Sprintf(runTruncationMessage, found, reportLimit, at)))
 }
 
-// unreadable is the finding for a document the analyzer could not open at all.
+// unreadable is the finding for a document the analyzer could not read: one the
+// walk could not open, one the reader refused, and one whose bytes are not
+// prose.
+//
+// ONE condition reaches a reader ONE way. [documentDiagnostics] used to format
+// its own copy of [unreadableMessage], so the same failure was worded by
+// whichever layer happened to notice it — and that second path, which never
+// touched a sentinel at all, is what showed the first one did not need one.
 func unreadable(file Path, cause error) goyze.Diagnostic {
-	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, errReadFile.With(cause, "path", string(file)))))
+	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, reason(cause))))
+}
+
+// reason is what the finding says went wrong, for a cause that may not exist.
+//
+// Both arms are reached and both are pinned: [Unreadable] reports paths it
+// never attempted to open and takes the first, while every read and decode
+// failure carries a real cause and takes the second.
+func reason(cause error) string {
+	if cause == nil {
+		return unopenable
+	}
+	return cause.Error()
 }
 
 // documentDiagnostics is one document's findings, with an unreadable document
@@ -137,7 +159,7 @@ func unreadable(file Path, cause error) goyze.Diagnostic {
 func documentDiagnostics(file Path, source Source) ([]goyze.Diagnostic, findingCount) {
 	diags, held, err := countedDiagnostics(file, source)
 	if err != nil {
-		return []goyze.Diagnostic{diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, err)))}, 1
+		return []goyze.Diagnostic{unreadable(file, err)}, 1
 	}
 	return diags, held
 }
