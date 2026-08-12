@@ -9,13 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestFileFindingsContainsAReadFailureToItsOwnFile names the containment the
+// TestSectionFindingsContainsAReadFailureToItsOwnFile names the containment the
 // doc comment claims is absolute: one file the gate cannot open yields exactly
 // one finding, against that file, and never raises the whole run's error.
-func TestFileFindingsContainsAReadFailureToItsOwnFile(t *testing.T) {
+func TestSectionFindingsContainsAReadFailureToItsOwnFile(t *testing.T) {
 	t.Parallel()
 
-	found, held := fileFindings(func(string) ([]byte, error) { return nil, os.ErrPermission }, "locked.md")
+	found, held := sectionFindings(func(string) ([]byte, error) { return nil, os.ErrPermission }, "locked.md")
 
 	require.Len(t, found, 1)
 	assert.Equal(t, findingCount(1), held, "one unreadable file counts as one finding, not none")
@@ -23,20 +23,21 @@ func TestFileFindingsContainsAReadFailureToItsOwnFile(t *testing.T) {
 	assert.Contains(t, found[0].Message, "cannot be analyzed as a document")
 }
 
-// TestAnUnreadableChangelogCountsBothOfItsFindings pins the arithmetic behind
-// the guard ordering. The run's reported total is the TRUE number of findings,
-// so a file that cannot be opened AND must not exist contributes two — and a
-// counter that still returned one would quietly under-report every such file in
-// the very sentence that claims to name the true count.
-func TestAnUnreadableChangelogCountsBothOfItsFindings(t *testing.T) {
+// TestTheSectionHalfNeverRepeatsWhatTheNameHalfSaid pins the seam between the
+// walk's two lists. The name half judges NAMES and the section half reads FILES,
+// so a `CHANGELOG.md` that cannot be opened must yield ONE finding here — the
+// read failure — and get its ban from the other list. Both halves answering for
+// the name is how one banned file becomes two findings, and every alias of it
+// another two.
+func TestTheSectionHalfNeverRepeatsWhatTheNameHalfSaid(t *testing.T) {
 	t.Parallel()
 
-	found, held := fileFindings(func(string) ([]byte, error) { return nil, os.ErrPermission }, "docs/CHANGELOG.md")
+	found, held := sectionFindings(func(string) ([]byte, error) { return nil, os.ErrPermission }, "docs/CHANGELOG.md")
 
-	require.Len(t, found, 2)
-	assert.Equal(t, findingCount(2), held, "the ban and the read failure are two findings, not one")
-	assert.Contains(t, found[0].Message, "must not be committed")
-	assert.Contains(t, found[1].Message, "cannot be analyzed as a document")
+	require.Len(t, found, 1)
+	assert.Equal(t, findingCount(1), held)
+	assert.Contains(t, found[0].Message, "cannot be analyzed as a document")
+	assert.NotContains(t, found[0].Message, "must not be committed", "the name is the other list's question")
 }
 
 // TestReasonIsTheCauseOrUnopenableWhenThereIsNone names both arms of reason,
@@ -78,7 +79,7 @@ func TestTheRunTotalIsTheDocumentsCountNotTheReportedOne(t *testing.T) {
 	t.Parallel()
 	crowded := strings.Repeat("## Changelog\n\n", int(findingLimit)+500)
 
-	_, held := fileFindings(func(string) ([]byte, error) { return []byte(crowded), nil }, "many.md")
+	_, held := sectionFindings(func(string) ([]byte, error) { return []byte(crowded), nil }, "many.md")
 
 	assert.Equal(t, findingCount(int(findingLimit)+500), held,
 		"every heading the document holds, not the thousand that fit in the report")

@@ -33,7 +33,7 @@ func TestTheRunTruncationNamesTheFirstFileItDropped(t *testing.T) {
 		contents[name] = crowded
 	}
 
-	report := docfiles.Report(reader(contents), files)
+	report := reported(reader(contents), files)
 
 	last := report.Diagnostics[len(report.Diagnostics)-1]
 	assert.Contains(t, last.Message, "onward are omitted")
@@ -80,7 +80,7 @@ func TestTheRunTruncationNamesTheFileWhoseFindingsWereActuallyDropped(t *testing
 	files = append(files, "extra.md")
 	contents["extra.md"] = "## Changelog\n"
 
-	report := docfiles.Report(reader(contents), files)
+	report := reported(reader(contents), files)
 
 	last := report.Diagnostics[len(report.Diagnostics)-1]
 	assert.Contains(t, last.Message, "onward are omitted")
@@ -96,7 +96,7 @@ func TestAnUnparseableDocumentCountsAsOneFinding(t *testing.T) {
 	t.Parallel()
 	contents := map[string]string{"bad.md": "\xff\xfe not utf-8 \xff", "good.md": "## Changelog\n"}
 
-	report := docfiles.Report(reader(contents), []string{"bad.md", "good.md"})
+	report := reported(reader(contents), []string{"bad.md", "good.md"})
 
 	require.Len(t, report.Diagnostics, 2, "the undecodable file is one finding, not none")
 	assert.Contains(t, report.Diagnostics[0].Message, "bad.md")
@@ -123,7 +123,7 @@ func TestAnUndecodableDocumentIsCountedInTheRunTotal(t *testing.T) {
 		contents[name] = "\xff\xfe not utf-8 \xff"
 	}
 
-	report := docfiles.Report(reader(contents), files)
+	report := reported(reader(contents), files)
 
 	last := report.Diagnostics[len(report.Diagnostics)-1]
 	assert.Contains(t, last.Message, "onward are omitted")
@@ -149,7 +149,7 @@ func TestEveryWholeFileFindingNamesTheFirstLine(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, truncated[len(truncated)-1].Line, "the per-document truncation notice")
 
-	report := docfiles.Report(reader(map[string]string{"bad.md": "\xff\xfe"}), []string{"bad.md"})
+	report := reported(reader(map[string]string{"bad.md": "\xff\xfe"}), []string{"bad.md"})
 	require.Len(t, report.Diagnostics, 1)
 	assert.Equal(t, 1, report.Diagnostics[0].Line, "a document nobody could decode")
 
@@ -172,7 +172,7 @@ func TestTheRunTruncationNoticeNamesTheFirstLineToo(t *testing.T) {
 		contents[name] = full
 	}
 
-	report := docfiles.Report(reader(contents), files)
+	report := reported(reader(contents), files)
 
 	last := report.Diagnostics[len(report.Diagnostics)-1]
 	require.Contains(t, last.Message, "onward are omitted")
@@ -235,7 +235,7 @@ func TestAnInnocentUnreadableDocumentInventsNothing(t *testing.T) {
 func TestAChangelogNameOutlivesEveryReaderThatCouldNotOpenIt(t *testing.T) {
 	t.Parallel()
 
-	report := docfiles.Report(func(string) ([]byte, error) { return nil, os.ErrPermission },
+	report := reported(func(string) ([]byte, error) { return nil, os.ErrPermission },
 		[]string{"docs/CHANGELOG.md", "docs/notes.md"})
 
 	require.Len(t, report.Diagnostics, 3, "the ban, its unreadable finding, and the innocent file's")

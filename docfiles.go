@@ -95,6 +95,16 @@
 // AsciiDoc document; measured over the fleet, that protects no file, in formats
 // that must not exist here at all.
 //
+// They also read different LISTS, and [Report] takes both. A walk hands back one
+// entry per NAME and one per FILE, and the two differ exactly where an alias
+// exists. The name half asks for names, because there the name IS the finding:
+// `ln -s docs/versions.md CHANGELOG.md` is a banned name in the repository, it
+// survives a clone as mode 120000, and resolving it to its target deletes the
+// evidence. The section half asks for files, one spelling per inode, because
+// reading one document twice under two names reports one defect as two. Driving
+// both halves off one list had to be wrong for one of them, and it was wrong for
+// the half nothing else can catch.
+//
 // # A NAME OUTLIVES EVERY REASON THE BYTES COULD NOT BE READ
 //
 // A file that cannot be read is reported as a tool failure — [ErrTooLarge] for
@@ -190,50 +200,59 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 // rather than the documents. It reported "11011 findings" over a tree holding
 // 16500, in the very sentence that says the true count is named.
 func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCount, error) {
-	base, ext := nameAndExtension(at)
-	// The NAME is decided FIRST, ahead of everything that reads a byte, and
-	// nothing below can take it back. It is raised before the generated claim,
+	// The NAME is decided FIRST, in a function that takes no bytes at all, and
+	// nothing below can take it back. It is decided before the generated claim,
 	// because a changelog is banned for EXISTING rather than for who typed it —
 	// and reading the claim first made the rule silent for exactly the files it
 	// most needs to catch, since release-please, git-cliff and goreleaser all
-	// open their CHANGELOG.md with one. It is raised before the size and text
+	// open their CHANGELOG.md with one. It is decided before the size and text
 	// guards for the same reason one step further out: those describe the
 	// CONTENTS, and a name is knowable with zero bytes read, so letting them
 	// answer first told an author the analyzer had trouble reading a file whose
 	// whole problem is that it is there.
-	diags := fileDiagnostics(at, base, ext)
+	named := nameFindings(at)
+	sections, held, err := sectionDiagnostics(at, source)
+	return append(named, sections...), findingCount(len(named)) + held, err
+}
+
+// sectionDiagnostics is the half of the rule that reads BYTES: every heading in
+// one document that opens a changelog section.
+//
+// It is a separate function because it is driven by a separate list. A walk
+// hands back one entry per NAME and one entry per FILE, and this half asks for
+// files — analyzing one document twice under two names reports one defect as two
+// — while the name half asks for names, where two names really are two findings.
+func sectionDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCount, error) {
 	if goyze.ByteCount(len(source)) > SizeLimit {
-		return diags, findingCount(len(diags)), ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
+		return nil, 0, ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
 	}
 	if !utf8.ValidString(string(source)) {
-		return diags, findingCount(len(diags)), ErrNotText.With(nil, "path", string(at))
+		return nil, 0, ErrNotText.With(nil, "path", string(at))
+	}
+	_, ext := nameAndExtension(at)
+	if !sectionExtensions[ext] {
+		return nil, 0, nil
 	}
 	// Stripped ONCE, here, before the parse, so every reader below sees the same
 	// text. A byte order mark ahead of `<!--` makes the line a paragraph rather
 	// than an HTML comment — which is how a Windows editor silently exempts a
 	// document from the claim its generator really did write.
-	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
-	if !sectionExtensions[ext] {
-		return diags, findingCount(len(diags)), nil
-	}
-	doc := parse(text)
+	doc := parse(Source(strings.TrimPrefix(string(source), byteOrderMark)))
 	if isGenerated(doc, ext) {
 		// Only the SECTIONS are out of scope. A generated document cannot be
 		// fixed by editing it, so a machine-written docs page carrying four
 		// hundred `## Unreleased` headings is one problem in its generator, and
 		// reporting four hundred findings buries it.
-		return diags, findingCount(len(diags)), nil
+		return nil, 0, nil
 	}
 	headings, total := headingDiagnostics(at, doc)
 	// Counted BEFORE the notice is appended. The truncation notice is this
 	// analyzer's own bookkeeping, not something the document contains, and
 	// counting it inflated the run total by one per truncated document.
-	held := findingCount(len(diags)) + total
-	diags = append(diags, headings...)
 	if total > findingLimit {
-		diags = append(diags, truncation(at, total))
+		headings = append(headings, truncation(at, total))
 	}
-	return diags, held, nil
+	return headings, total, nil
 }
 
 // diagnostic builds one finding at a line. Every finding of this rule addresses

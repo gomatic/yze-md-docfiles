@@ -72,8 +72,31 @@ func Unreadable(paths []string) []goyze.Diagnostic {
 	return diags
 }
 
-// Report runs the changelog check over each document and aggregates the
-// diagnostics into the lean stickler-json report.
+// Names is every spelling the walk reached, one entry per NAME, symlinks left
+// unresolved. Files is what the walk found to read, one entry per FILE.
+//
+// They are two types rather than two `[]string` parameters because they are two
+// different questions with two different right answers, and swapping them at a
+// call site would compile: the name half would judge one spelling per inode and
+// stop seeing the aliases, and the content half would read one document once per
+// name it has.
+type (
+	Names []string
+	Files []string
+)
+
+// Report runs the changelog check over a walk's names and its files, and
+// aggregates the diagnostics into the lean stickler-json report.
+//
+// THE TWO HALVES READ TWO DIFFERENT LISTS, and that is the whole reason both are
+// parameters. The name half judges NAMES, because there the name IS the finding:
+// a symlink named `CHANGELOG.md` pointing at an innocent document is a banned
+// name in the repository, it survives a clone as mode 120000, and resolving it to
+// its target deletes the evidence. The section half reads FILES, one spelling per
+// inode, because analyzing one document twice under two names reports one defect
+// as two. Driving both halves off one list had to be wrong for one of them, and
+// it was wrong for the one that cannot be worked around.
+//
 // Every diagnostic a run produces passes through ONE counter, ONE limit and ONE
 // truncation notice. There were three, and they disagreed. Read failures were
 // appended with no limit at all; the limit was tested against the length of a
@@ -82,50 +105,77 @@ func Unreadable(paths []string) []goyze.Diagnostic {
 // changelog reported the ten thousand, dropped the changelog, announced
 // nothing, and exited zero — a finding lost in silence, which is the one
 // outcome this file exists to prevent.
-func Report(read FileReader, files []string) goyze.Report {
-	report := goyze.Report{}
-	total := findingCount(0)
-	truncatedAt := Path("")
+func Report(read FileReader, names Names, files Files) goyze.Report {
+	found := run{}
+	for _, name := range names {
+		banned := nameFindings(Path(name))
+		found = found.add(Path(name), banned, findingCount(len(banned)))
+	}
 	for _, file := range files {
-		found, held := fileFindings(read, Path(file))
-		// The TRUE count, not the reported one: a document past its own limit
-		// hands back a truncated slice, and summing slices counted this run's
-		// truncation instead of the documents' findings.
-		total += held
-		if truncatedAt != "" {
-			// Past the limit the run keeps COUNTING but stops collecting, so
-			// the total it reports is the true one.
-			continue
-		}
-		room := reportLimit - findingCount(len(report.Diagnostics))
-		if findingCount(len(found)) > room {
-			report.Diagnostics = append(report.Diagnostics, found[:room]...)
-			truncatedAt = Path(file)
-			continue
-		}
-		report.Diagnostics = append(report.Diagnostics, found...)
+		sections, held := sectionFindings(read, Path(file))
+		found = found.add(Path(file), sections, held)
 	}
-	if truncatedAt != "" {
-		report.Diagnostics = append(report.Diagnostics, runTruncation(truncatedAt, total))
-	}
-	return report
+	return found.report()
 }
 
-// fileFindings is one file's diagnostics, whether it could be read or not.
+// run is one report being built: what it has collected, the TRUE number of
+// findings it has seen, and the first path whose findings it had to drop.
+type run struct {
+	truncatedAt Path
+	diagnostics []goyze.Diagnostic
+	total       findingCount
+}
+
+// add takes one path's findings into the run — counting all of them, and
+// collecting as many as the run's limit still has room for.
+//
+// The count is the TRUE one, not the collected one: a document past its own
+// limit hands back a truncated slice, and summing slices counted this analyzer's
+// truncation instead of the documents' findings.
+func (r run) add(at Path, found []goyze.Diagnostic, held findingCount) run {
+	r.total += held
+	if r.truncatedAt != "" {
+		// Past the limit the run keeps COUNTING but stops collecting, so the
+		// total it reports is the true one.
+		return r
+	}
+	room := reportLimit - findingCount(len(r.diagnostics))
+	if findingCount(len(found)) > room {
+		r.diagnostics = append(r.diagnostics, found[:room]...)
+		r.truncatedAt = at
+		return r
+	}
+	r.diagnostics = append(r.diagnostics, found...)
+	return r
+}
+
+// report is the run as the stickler runner consumes it, with the notice that
+// accounts for anything the limit dropped.
+func (r run) report() goyze.Report {
+	if r.truncatedAt != "" {
+		r.diagnostics = append(r.diagnostics, runTruncation(r.truncatedAt, r.total))
+	}
+	return goyze.Report{Diagnostics: r.diagnostics}
+}
+
+// sectionFindings is one FILE's content findings, whether it could be read or
+// not. It never repeats what the NAME half already said — the name is judged
+// from the walk's list of names, and a file reached by one name would otherwise
+// be banned twice.
 //
 // A file the gate cannot open becomes ONE finding against that file and the run
 // continues, exactly as an unparseable one does — a single blob mis-claimed by
 // discovery can never take every other file's findings down with it.
-func fileFindings(read FileReader, file Path) ([]goyze.Diagnostic, findingCount) {
+func sectionFindings(read FileReader, file Path) ([]goyze.Diagnostic, findingCount) {
 	data, err := read(string(file))
 	if err != nil {
-		// The name is still knowable: the reader refusing a file says nothing
-		// about what it is called, and a locked `CHANGELOG.md` must not exist
-		// whether or not anybody can open it.
-		named := nameFindings(file)
-		return append(named, unreadable(file, err)), findingCount(len(named)) + 1
+		return []goyze.Diagnostic{unreadable(file, err)}, 1
 	}
-	return documentDiagnostics(file, Source(data))
+	diags, held, err := sectionDiagnostics(file, Source(data))
+	if err != nil {
+		return append(diags, unreadable(file, err)), held + 1
+	}
+	return diags, held
 }
 
 // runTruncation is the finding that stands for everything past the run's limit,
@@ -144,10 +194,10 @@ func runTruncation(at Path, found findingCount) goyze.Diagnostic {
 // walk could not open, one the reader refused, and one whose bytes are not
 // prose.
 //
-// ONE condition reaches a reader ONE way. [documentDiagnostics] used to format
-// its own copy of [unreadableMessage], so the same failure was worded by
-// whichever layer happened to notice it — and that second path, which never
-// touched a sentinel at all, is what showed the first one did not need one.
+// ONE condition reaches a reader ONE way. A second layer used to format its own
+// copy of [unreadableMessage], so the same failure was worded by whichever layer
+// happened to notice it — and that second path, which never touched a sentinel
+// at all, is what showed the first one did not need one.
 func unreadable(file Path, cause error) goyze.Diagnostic {
 	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, reason(cause))))
 }
@@ -162,21 +212,4 @@ func reason(cause error) string {
 		return unopenable
 	}
 	return cause.Error()
-}
-
-// documentDiagnostics is one document's findings, with an unreadable document
-// reported as a finding of its own rather than raised as the whole run's error.
-//
-// The unreadable finding is APPENDED to whatever the rule could already say,
-// rather than substituted for it. [countedDiagnostics] decides the file's name
-// before it looks at a byte, so a `CHANGELOG.md` too large or too malformed to
-// parse arrives here carrying its ban, and dropping that on the floor would
-// leave an author told to investigate a reading problem instead of to delete a
-// file.
-func documentDiagnostics(file Path, source Source) ([]goyze.Diagnostic, findingCount) {
-	diags, held, err := countedDiagnostics(file, source)
-	if err != nil {
-		return append(diags, unreadable(file, err)), held + 1
-	}
-	return diags, held
 }

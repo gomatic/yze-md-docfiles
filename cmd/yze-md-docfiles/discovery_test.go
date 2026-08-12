@@ -6,7 +6,9 @@ package main
 // proven there, once, rather than three times in three ways that disagreed.
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	goyze "github.com/gomatic/go-yze"
@@ -127,4 +129,73 @@ func TestEveryDotlessChangelogSpellingIsDiscovered(t *testing.T) {
 		assert.False(t, isDocument(goyze.FilePath(filepath.Join("docs", stem))),
 			"%q is a document about the subject, not the file", stem)
 	}
+}
+
+// TestACommittedSymlinkNamedChangelogIsReportedOnce pins the escape the walk's
+// two lists exist for, and the consumer decision that makes them worth having.
+//
+// `ln -s docs/versions.md CHANGELOG.md` is a committed entry — mode 120000,
+// which survives a clone — and resolving it before judging deleted the evidence:
+// the banned NAME never reached the rule, and the innocent document behind it
+// reported whatever it held. So the name half judges every SPELLING and the
+// section half reads every FILE, and this asserts both halves at once: the link
+// earns exactly one ban, and its target's sections are reported exactly once
+// rather than a second time under the second name.
+func TestACommittedSymlinkNamedChangelogIsReportedOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "docs/versions.md", banned)
+	require.NoError(t, os.Symlink(filepath.Join(dir, "docs", "versions.md"), filepath.Join(dir, "CHANGELOG.md")))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+
+	assert.Equal(t, 1, strings.Count(out, "must not be committed"),
+		"the link's name is banned, once — the walk reaches it by one spelling")
+	assert.Contains(t, out, "CHANGELOG.md must not be committed", "and the ban names the link, not its target")
+	assert.Equal(t, 1, strings.Count(out, "section is a changelog"),
+		"while the document behind it is read once, not once per name it has")
+}
+
+// TestADanglingSymlinkNamedChangelogIsStillBanned pins the shape that reaches
+// neither list. A link resolving to nothing is not a file the walk can read and
+// not a name it can hand to the section half, so it arrives as an unreadable
+// PATH — and saying only that it could not be read answers a question nobody
+// asked about an entry whose whole problem is its name.
+//
+// The consumer promotes it: every unreadable path is judged by name before it is
+// reported as unreadable. That decision was taken for the size and encoding
+// guards, where a name is knowable with zero bytes read, and this is the same
+// rule reaching one step further out rather than a case handled specially.
+func TestADanglingSymlinkNamedChangelogIsStillBanned(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", banned)
+	require.NoError(t, os.Symlink(filepath.Join(dir, "absent.md"), filepath.Join(dir, "CHANGELOG.md")))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+
+	assert.Contains(t, out, "CHANGELOG.md must not be committed", "the name is knowable with zero bytes read")
+	assert.Contains(t, out, "cannot be analyzed as a document", "and the unreadable path is still reported")
+	assert.Contains(t, out, "README.md", "while every other document keeps its findings")
+}
+
+// TestASymlinkToADirectoryNamedChangelogIsStillBanned pins the last spelling of
+// the same entry. `ln -s docs CHANGELOG.md` is a committed link to a DIRECTORY,
+// which the walk names rather than descends — so it appears in no list of files
+// at all, and its name went unmentioned while every document behind it was
+// reported under its own path.
+func TestASymlinkToADirectoryNamedChangelogIsStillBanned(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "docs/guide.md", banned)
+	require.NoError(t, os.Symlink(filepath.Join(dir, "docs"), filepath.Join(dir, "CHANGELOG.md")))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+	out := buf.String()
+
+	assert.Contains(t, out, "CHANGELOG.md must not be committed", "the link's own name is a changelog")
+	assert.Equal(t, 1, strings.Count(out, "section is a changelog"),
+		"and the tree behind it is read once, under its own path")
 }

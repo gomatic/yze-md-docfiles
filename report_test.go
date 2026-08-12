@@ -18,6 +18,14 @@ import (
 // errUnreadable stands in for whatever the filesystem refuses with.
 const errUnreadable errs.Const = "unreadable"
 
+// reported runs the aggregate over one list of paths, as a walk with no aliases
+// hands it back: every file is reached by exactly one name, so the two lists are
+// the same list. The tests that care about the DIFFERENCE between them build the
+// two lists themselves.
+func reported(read docfiles.FileReader, paths []string) goyze.Report {
+	return docfiles.Report(read, docfiles.Names(paths), docfiles.Files(paths))
+}
+
 // reader serves file contents from a map, refusing anything absent.
 func reader(files map[string]string) docfiles.FileReader {
 	return func(path string) ([]byte, error) {
@@ -30,7 +38,9 @@ func reader(files map[string]string) docfiles.FileReader {
 }
 
 // TestReportAggregatesEveryDocumentsFindings pins that a run over several files
-// yields all their findings, each naming the file it came from.
+// yields all their findings, each naming the file it came from — the banned
+// NAMES first, then the sections, because the two halves read the walk's two
+// lists and a report cannot interleave what it was handed separately.
 func TestReportAggregatesEveryDocumentsFindings(t *testing.T) {
 	t.Parallel()
 
@@ -40,11 +50,13 @@ func TestReportAggregatesEveryDocumentsFindings(t *testing.T) {
 		"CHANGELOG.md": "",
 	})
 
-	report := docfiles.Report(read, []string{"a.md", "b.md", "CHANGELOG.md"})
+	report := reported(read, []string{"a.md", "b.md", "CHANGELOG.md"})
 
 	require.Len(t, report.Diagnostics, 2)
-	assert.Equal(t, "a.md", report.Diagnostics[0].Path)
-	assert.Equal(t, "CHANGELOG.md", report.Diagnostics[1].Path)
+	assert.Equal(t, "CHANGELOG.md", report.Diagnostics[0].Path)
+	assert.Contains(t, report.Diagnostics[0].Message, "must not be committed")
+	assert.Equal(t, "a.md", report.Diagnostics[1].Path)
+	assert.Contains(t, report.Diagnostics[1].Message, "section is a changelog")
 }
 
 // TestReportContainsAReadFailureToItsOwnFile pins that a document the gate
@@ -61,7 +73,7 @@ func TestReportContainsAReadFailureToItsOwnFile(t *testing.T) {
 		return []byte("## Changelog\n"), nil
 	}
 
-	report := docfiles.Report(read, []string{"locked.md", "notes.md"})
+	report := reported(read, []string{"locked.md", "notes.md"})
 
 	paths := map[string]string{}
 	for _, d := range report.Diagnostics {
@@ -92,7 +104,7 @@ func TestReportContainsAnUnreadableDocumentToItsOwnFile(t *testing.T) {
 		"notes.md": "## Changelog\n",
 	})
 
-	report := docfiles.Report(read, []string{"blob.md", "notes.md"})
+	report := reported(read, []string{"blob.md", "notes.md"})
 
 	require.Len(t, report.Diagnostics, 2)
 	assert.Contains(t, report.Diagnostics[0].Message, "cannot be analyzed as a document")
@@ -103,7 +115,7 @@ func TestReportContainsAnUnreadableDocumentToItsOwnFile(t *testing.T) {
 func TestReportOfNoFilesIsAnEmptyReport(t *testing.T) {
 	t.Parallel()
 
-	report := docfiles.Report(reader(nil), nil)
+	report := reported(reader(nil), nil)
 
 	assert.Empty(t, report.Diagnostics)
 }
@@ -124,7 +136,7 @@ func TestReportLimitBoundsTheRunAndNeverLosesTheCount(t *testing.T) {
 		contents[name] = strings.Repeat("## Changelog\n", 500)
 	}
 
-	report := docfiles.Report(reader(contents), files)
+	report := reported(reader(contents), files)
 
 	assert.LessOrEqual(t, len(report.Diagnostics), 10_001, "the run is bounded, not just each document")
 	last := report.Diagnostics[len(report.Diagnostics)-1]
@@ -137,7 +149,7 @@ func TestReportLimitBoundsTheRunAndNeverLosesTheCount(t *testing.T) {
 func TestARunUnderTheLimitIsReportedInFull(t *testing.T) {
 	t.Parallel()
 
-	report := docfiles.Report(
+	report := reported(
 		reader(map[string]string{"a.md": "## Changelog\n", "b.md": "## Changelog\n"}),
 		[]string{"a.md", "b.md"},
 	)
@@ -153,7 +165,7 @@ func TestARunUnderTheLimitIsReportedInFull(t *testing.T) {
 func TestAnUnreadableDocumentIsOneFindingAndTheRunContinues(t *testing.T) {
 	t.Parallel()
 
-	report := docfiles.Report(func(path string) ([]byte, error) {
+	report := reported(func(path string) ([]byte, error) {
 		if path == "locked.md" {
 			return nil, os.ErrPermission
 		}
@@ -181,7 +193,7 @@ func TestAReadFailureCannotCrowdOutARealFinding(t *testing.T) {
 	}
 	files = append(files, "CHANGELOG.md")
 
-	report := docfiles.Report(func(path string) ([]byte, error) {
+	report := reported(func(path string) ([]byte, error) {
 		if strings.HasPrefix(path, "locked-") {
 			return nil, os.ErrPermission
 		}
@@ -236,4 +248,47 @@ func TestThePublishedContractIsWhatConsumersHold(t *testing.T) {
 	assert.ErrorIs(t, goyze.ErrNotRegularFile, docfiles.ErrNotRegularFile,
 		"a refusal the discovery raises is one this package's constant names")
 	assert.ErrorIs(t, goyze.ErrTooLarge, docfiles.ErrTooLarge)
+}
+
+// TestTheNameHalfJudgesNamesAndTheSectionHalfReadsFiles pins the seam between
+// the walk's two lists, from inside the package where the two can be handed in
+// separately.
+//
+// A walk hands back one entry per NAME and one entry per FILE, and they differ
+// exactly where an alias exists: `CHANGELOG.md` as a symlink to
+// `docs/versions.md` is two names and one file. The name half must see both
+// names — there the name IS the finding, and resolving it deletes the evidence —
+// while the section half must see the file once, or one banned section is
+// reported as two.
+func TestTheNameHalfJudgesNamesAndTheSectionHalfReadsFiles(t *testing.T) {
+	t.Parallel()
+
+	read := reader(map[string]string{"docs/versions.md": "## Changelog\n"})
+
+	report := docfiles.Report(read,
+		docfiles.Names{"CHANGELOG.md", "docs/versions.md"},
+		docfiles.Files{"docs/versions.md"})
+
+	require.Len(t, report.Diagnostics, 2, "one ban for the alias, one section for the document behind it")
+	assert.Equal(t, "CHANGELOG.md", report.Diagnostics[0].Path)
+	assert.Contains(t, report.Diagnostics[0].Message, "must not be committed")
+	assert.Equal(t, "docs/versions.md", report.Diagnostics[1].Path)
+	assert.Contains(t, report.Diagnostics[1].Message, "section is a changelog")
+}
+
+// TestAFileReachedByTwoNamesIsReadOnce pins the direction the other list would
+// get wrong. Two names for one document is one document: reading it once per
+// name reports one banned section twice, and an author deleting the section they
+// were shown would still be told it is there.
+func TestAFileReachedByTwoNamesIsReadOnce(t *testing.T) {
+	t.Parallel()
+
+	read := reader(map[string]string{"docs/versions.md": "## Changelog\n", "alias.md": "## Changelog\n"})
+
+	report := docfiles.Report(read,
+		docfiles.Names{"alias.md", "docs/versions.md"},
+		docfiles.Files{"docs/versions.md"})
+
+	require.Len(t, report.Diagnostics, 1, "one file, one section finding, whatever it is called")
+	assert.Equal(t, "docs/versions.md", report.Diagnostics[0].Path)
 }

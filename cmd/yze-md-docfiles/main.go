@@ -53,9 +53,16 @@ func report(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The two halves of the rule read the walk's two lists. The name half judges
+	// NAMES — every spelling, symlinks unresolved, because a symlink called
+	// `CHANGELOG.md` is a banned name whatever innocent document it points at,
+	// and it survives a clone as mode 120000. The section half reads FILES, one
+	// spelling per inode, because reading one document twice under two names
+	// reports one defect as two.
+	//
 	// Report cannot fail: an unreadable or unparseable document becomes a
 	// finding against that file rather than the run's error.
-	out := docfiles.Report(readFile, found.Files)
+	out := docfiles.Report(readFile, found.Names, found.Files)
 	out.Diagnostics = append(docfiles.Unreadable(found.Unreadable), out.Diagnostics...)
 	return json.NewEncoder(stdout).Encode(out)
 }
