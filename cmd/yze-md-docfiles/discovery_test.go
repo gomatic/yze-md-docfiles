@@ -17,15 +17,18 @@ import (
 // TestDiscoveryClaimsOnlyProse pins which files a walk reads: the extensions a
 // changelog is written in, and the extensionless canonical spelling. Source
 // code that manages the concept is not an instance of it.
+//
+// The `.rst` and `.adoc` documents are named `CHANGELOG` rather than carrying a
+// banned section, because the analyzer judges those two by NAME alone — it does
+// not parse them. Asserting on a section inside one would assert nothing about
+// discovery: the file would be claimed, read, and correctly found silent, which
+// is indistinguishable from never having been claimed at all.
 func TestDiscoveryClaimsOnlyProse(t *testing.T) {
 	dir := t.TempDir()
 	writeDoc(t, dir, "notes.md", banned)
-	// Each in the spelling ITS OWN family uses: reStructuredText has no
-	// marker-run heading, so writing `## Changelog` there proved the file was
-	// claimed only for as long as one pattern was wrongly shared by all three.
-	writeDoc(t, dir, "notes.rst", "Changelog\n=========\n")
+	writeDoc(t, dir, "CHANGELOG.rst", "")
 	writeDoc(t, dir, "UPPER.MD", banned)
-	writeDoc(t, dir, "guide.adoc", "== Changelog\n")
+	writeDoc(t, dir, "CHANGELOG.adoc", "")
 	writeDoc(t, dir, "guide.markdown", banned)
 	writeDoc(t, dir, "notes.txt", banned)
 	writeDoc(t, dir, "changelog.go", banned)
@@ -34,11 +37,33 @@ func TestDiscoveryClaimsOnlyProse(t *testing.T) {
 
 	require.Equal(t, 0, run([]string{dir}))
 	out := buf.String()
-	for _, claimed := range []string{"notes.md", "notes.rst", "UPPER.MD", "guide.adoc", "guide.markdown", "notes.txt"} {
+	for _, claimed := range []string{
+		"notes.md", "CHANGELOG.rst", "UPPER.MD", "CHANGELOG.adoc", "guide.markdown", "notes.txt",
+	} {
 		assert.Contains(t, out, claimed, "%s is prose", claimed)
 	}
 	assert.NotContains(t, out, "changelog.go", "code is not prose")
 	assert.NotContains(t, out, "image.png")
+}
+
+// TestEveryProseExtensionIsClaimedByTheWalk pins the claim predicate directly,
+// so an extension can be dropped from it without the finding it would have
+// produced being the only thing that notices. The walk must claim every
+// extension EITHER half of the rule judges — the section half parses four of
+// them, and the name half judges two more that it never opens.
+func TestEveryProseExtensionIsClaimedByTheWalk(t *testing.T) {
+	for _, name := range []string{
+		"notes.md", "notes.markdown", "notes.txt", "notes.rst", "notes.adoc",
+		"NOTES.MD", "notes.RST",
+	} {
+		assert.True(t, isDocument(goyze.FilePath(filepath.Join("docs", name))),
+			"%q is prose this rule reads", name)
+	}
+
+	for _, name := range []string{"changelog.go", "image.png", "Makefile", "notes.html"} {
+		assert.False(t, isDocument(goyze.FilePath(filepath.Join("docs", name))),
+			"%q is not", name)
+	}
 }
 
 // TestDiscoveryClaimsTheExtensionlessChangelog pins the canonical Unix

@@ -1,229 +1,182 @@
 package docfiles
 
 // The generated-claim exemption: the one way out of the HEADING half of this
-// rule, and so the one place an evasion is worth the most. Every repair here
-// closed a shape that silenced a document by claiming an authorship no
-// generator had made.
+// rule, and so the one place an evasion is worth the most.
 //
-// It is the heading half ALONE. Each repair below is written against the day
-// this check also silenced the FILE finding, which is how a generated
-// `CHANGELOG.md` reported nothing at all; that finding now runs in front of
-// this one and no claim reaches it. The evasions are still worth closing —
-// a claim typed into a hand-written document still buries every section
-// finding in it — but none of them can hide the file any more.
+// It is the heading half ALONE. A changelog FILE is banned for existing, and the
+// file finding is raised before this check is ever reached — which is what
+// closed the hole every generator walked through, since release-please,
+// git-cliff and goreleaser all open their `CHANGELOG.md` with a claim. What the
+// claim still buys is a machine-written docs page carrying four hundred
+// `## Unreleased` headings: that is ONE problem, in its generator, and four
+// hundred findings bury it while no author can act on any of them.
+//
+// The exemption is closed to everything else by asking the PARSER rather than
+// the text. A claim counts only inside an HTML comment BLOCK, which is the one
+// construct markdown renders as nothing at all — so a document DEMONSTRATING the
+// convention, which shows the same words in a fence, in an indented code block
+// or in a paragraph, is still judged as the hand-written document it is. Each of
+// those was once a one-line, audit-trail-free opt-out from every finding in a
+// file, reached through a different door, and each is now a different node.
 
 import (
+	"bytes"
 	"regexp"
-	"strings"
+
+	"github.com/yuin/goldmark/ast"
 )
 
-// generatedMarkers are the phrases a generator writes to say a file is its
-// output and not an author's. A generated document cannot be fixed by editing
-// it, so reporting its SECTIONS tells an author to change lines that are
-// overwritten on the next run — and a machine-written page with four hundred of
-// them is one problem in its generator rather than four hundred findings. The
-// document's NAME is a different question, answered before this one: a
-// changelog file is banned for existing, and no generator's claim excuses it.
-//
-// The marker must be a GENERATOR'S claim of authorship, not merely a request
-// not to edit. A bare "DO NOT EDIT" was a one-line, audit-trail-free opt-out
-// from the whole rule — anyone could silence a hand-written changelog by typing
-// three words at the top of it — whereas "Code generated" and "@generated" are
-// the conventional statements a tool writes about its own output. A file that
-// merely invites manual additions is hand-maintained BY DESIGN, and exempting
-// those would have silently excused every finding this rule has in the fleet.
-// The margin is a COMMENT DELIMITER one of these formats actually has, and it is
-// REQUIRED. It was once `\W*` — every non-word character, which is markdown's
-// list markers, its blockquote marker and its backticks — and then an optional
-// group including `#` and `;`, which are not comment delimiters in any of the
-// five prose formats this rule reads. Each round left the same hole: a bare
-// `@generated`, or `# @generated`, is VISIBLE BODY TEXT that a reader sees, and
-// typing it at the top of a hand-written changelog silenced the whole document,
-// file finding included. That is the one-line, audit-trail-free opt-out this
-// pattern exists to close, reintroduced twice by the pattern itself.
-//
-// A generator writing a MULTI-LINE header states the claim inside the comment
-// rather than beside a delimiter, so [bareClaim] answers for a line the scanner
-// says is already within one.
-var generatedClaims = map[extension]*regexp.Regexp{
-	// Markdown's only comment is the HTML one. `//` and `/* */` are C, `..` is
-	// reStructuredText: in a markdown document each renders as VISIBLE BODY
-	// TEXT, so accepting them let one literal line — `// @generated`, which a
-	// reader sees as a paragraph — exempt a hand-written changelog whole. That
-	// is the one-line, audit-trail-free opt-out this pattern exists to close,
-	// reached through a delimiter the format does not have.
-	markdownExt:     claimIn(commentSyntax{opener: `<!--`, closer: `-->`}),
-	markdownLongExt: claimIn(commentSyntax{opener: `<!--`, closer: `-->`}),
-	// reStructuredText's comment is `..` followed by text. `.. name::` is a
-	// DIRECTIVE, which renders as a visible admonition rather than vanishing —
-	// `.. note:: @generated` at the top of a hand-written changelog is a note a
-	// reader sees, and it exempted the document. The opener therefore requires
-	// whitespace after the dots, which RST does too, and refuses a directive.
-	restructuredExt: claimIn(commentSyntax{opener: `\.\.[ \t]+`}),
-	asciidocExt:     claimIn(commentSyntax{opener: `//+`}),
-	// Plain text and the extensionless spelling have NO comment syntax, and say
-	// so here rather than by absence. Every spelling of the claim is a line a
-	// reader simply sees, so accepting one there accepts the same line in a
-	// hand-written file — the opt-out this pattern exists to close.
-	plainTextExt:     nil,
-	extensionlessExt: nil,
-}
-
-// claimIn is the pattern for a claim written between one family's comment
-// delimiters. The closer is optional because a single-line comment has none.
-func claimIn(delimiters commentSyntax) *regexp.Regexp {
-	tail := `[ \t]*$`
-	if delimiters.closer != "" {
-		tail = `[ \t]*(?:` + delimiters.closer + `)?[ \t]*$`
-	}
-	return regexp.MustCompile(`^(?:` + delimiters.opener + `)[ \t]*(?:` + claimWords + `)` + tail)
-}
-
-// commentSyntax is how one prose format opens and closes a comment. A format
-// whose comment runs to the end of the line has no closer.
-type commentSyntax struct{ opener, closer string }
-
-// directiveOpeners are the lines a format writes that LOOK like a comment and
-// render as visible content.
-//
-// reStructuredText has one: `..` introduces both a comment and a directive, and
-// only the directive has a name followed by two colons. `.. note:: @generated`
-// renders as an admonition a reader sees, and it exempted a hand-written
-// changelog whole — the same one-line, audit-trail-free opt-out this file has
-// now closed for a delimiter markdown does not have, for a fence, and for
-// indentation. Go's regexp has no lookahead, so the refusal is its own pattern
-// rather than a clause inside the claim.
-var directiveOpeners = map[extension]*regexp.Regexp{
-	restructuredExt: regexp.MustCompile(`^\.\.[ \t]+[^ \t:]+::`),
-	// The rest have no such ambiguity and say so here rather than by absence:
-	// markdown's only comment is the HTML one and it vanishes; AsciiDoc's `//`
-	// is a line comment with no directive spelling; plain text and the
-	// extensionless form have no comments at all.
-	markdownExt:      nil,
-	markdownLongExt:  nil,
-	asciidocExt:      nil,
-	plainTextExt:     nil,
-	extensionlessExt: nil,
-}
-
-// rendersVisibly reports a line whose own format shows it to a reader, however
-// much it resembles a comment.
-func rendersVisibly(text blockLine, ext extension) bool {
-	directive := directiveOpeners[ext]
-	return directive != nil && directive.MatchString(string(text))
-}
-
-// bareClaim is the same words with NO delimiter, which is only a claim when the
-// line is already INSIDE a comment.
-var bareClaim = regexp.MustCompile(`^(?:` + claimWords + `)$`)
-
-// generatedClaim is the pattern for one document's family. A family with no
-// comment syntax at all — plain text — has no way to make a claim that a reader
-// would not simply see, so it has none.
-func generatedClaim(ext extension) (*regexp.Regexp, bool) {
-	claim, isKnown := generatedClaims[ext]
-	return claim, isKnown && claim != nil
-}
-
-// claimWords are the conventional statements a generator makes about its own
+// generatedClaim is the conventional statement a generator makes about its own
 // output.
 //
-// The trailing period is OPTIONAL and the claim may carry the generator's own
-// words after it: gomarkdoc — the standard Go markdown generator — writes
-// `<!-- Code generated by gomarkdoc. DO NOT EDIT -->` with no period, and
-// mirror-table writes `<!-- This file is @generated by mirror-table, do not edit
-// it manually -->`. Both were reported as hand-maintained, which tells an author
-// to stop editing by hand a file that is overwritten on the next run. Verified
-// against the copies in this machine's module cache, not invented.
-const claimWords = `.*Code generated .*DO NOT EDIT\.?.*|.*@generated.*`
+// The marker must be a claim of AUTHORSHIP, not merely a request not to edit. A
+// bare "DO NOT EDIT" was a three-word opt-out anyone could type at the top of a
+// hand-written changelog, and a file that invites manual additions is
+// hand-maintained BY DESIGN — while "Code generated … DO NOT EDIT" and
+// "@generated" are what tools write about their own output. The trailing period
+// is optional and the generator's own words may follow, because that is how they
+// actually spell it: gomarkdoc writes `<!-- Code generated by gomarkdoc. DO NOT
+// EDIT -->` with no period, and mirror-table writes `<!-- This file is
+// @generated by mirror-table, do not edit it manually -->`. Verified against the
+// copies in this machine's module cache, not invented.
+var generatedClaim = regexp.MustCompile(`Code generated .*DO NOT EDIT|@generated`)
 
-// claimSite is where in the document a candidate claim sits, which decides
-// whether it needs a comment delimiter of its own.
-type claimSite int
-
-const (
-	// inProse is a line the document renders, where a claim must carry a
-	// comment delimiter or it is text a reader sees.
-	inProse claimSite = iota
-	// insideComment is a line already within one, where the delimiters are on
-	// the lines above and below it.
-	insideComment
-)
-
-// generatedHeader is how many leading lines are searched for a claim. A
-// generator writes its claim at the top, alone on a line; a document ABOUT the
-// convention QUOTES it inside a sentence, and searching for the words anywhere
-// in those lines exempted two real fleet documents that merely described the
-// rule — a standards page and a project record, both hand-written, both wholly
-// out of scope by accident.
-const generatedHeader = 5
-
-// claimSiteOf says whether a line may carry a claim at all, and where it sits. A
-// line inside a fenced block is SHOWING a generated header rather than making
-// one, and exempted a whole document that merely demonstrated the convention.
-func claimSiteOf(state lineState) (claimSite, bool) {
-	if state.isInComment {
-		return insideComment, true
-	}
-	return inProse, state.isProse
-}
-
-// lineState is what the block scanner says about one line of the header: whether
-// the document renders it, and whether it sits inside a comment.
-type lineState struct{ isProse, isInComment bool }
+// generatedHeader is how far into a document a claim is looked for. A generator
+// writes its claim at the top, and a comment further down is a note about a
+// passage rather than a statement about the file — searching the whole document
+// exempted two real fleet documents that merely DESCRIBED the convention.
+const generatedHeader lineNumber = 5
 
 // isGenerated reports a document that declares itself a generator's output.
 //
-// The header is read through the SAME block scanner the headings are, so a
-// claim the document is merely SHOWING does not exempt it. A fenced block in
-// the first few lines — a document demonstrating what a generated header looks
-// like — otherwise silenced every finding in the file, which is the same
-// one-line opt-out the claim pattern itself was tightened to close, reached
-// through the one door still open.
-func isGenerated(source Source, family markup, ext extension) bool {
-	state := scanner{markup: family}
-	text := remaining(source)
-	for read := 0; read < generatedHeader; read++ {
-		current, tail, ok := nextLine(text)
-		if !ok {
-			return false
-		}
-		text = tail
-		was := state
-		var isProse bool
-		state, isProse = state.step(current)
-		where, eligible := claimSiteOf(lineState{isProse: isProse, isInComment: was.isInComment})
-		if eligible && declaresGenerated(current, where, ext) {
+// Only a TOP-LEVEL block is asked. A comment nested inside a blockquote or a
+// list item is a remark about that passage, and a document whose header is a
+// quotation is quoting somebody.
+func isGenerated(doc document, ext extension) bool {
+	if !commentedExtensions[ext] {
+		return false
+	}
+	for child := doc.root.FirstChild(); child != nil; child = child.NextSibling() {
+		if doc.declaresGenerated(child) {
 			return true
 		}
 	}
 	return false
 }
 
-// declaresGenerated reports one line that IS a generator's claim rather than
-// one that merely contains its words. The claim stands alone on its line, in
-// whatever comment syntax the format uses — the pattern's own non-word margins
-// consume the delimiters, so no separate stripping is needed — while a sentence
-// quoting it does not match at all.
-func declaresGenerated(text line, where claimSite, ext extension) bool {
-	trimmed := strings.TrimSpace(string(text))
-	if rendersVisibly(blockLine(trimmed), ext) {
-		return false
-	}
-	claim, hasComments := generatedClaim(ext)
-	if !hasComments {
-		// `.txt` has no comment syntax, so every spelling of the claim is text a
-		// reader sees. A plain-text file cannot declare itself generated without
-		// saying so out loud, and a rule that accepted it would accept the same
-		// line in a hand-written one.
-		return false
-	}
-	if where == insideComment {
-		// Already inside a comment, so no delimiter is expected on this line —
-		// the conventional multi-line generated header puts the claim on a line
-		// of its own between `<!--` and `-->`, and requiring a delimiter there
-		// reported a genuinely generated document as hand-maintained.
-		return bareClaim.MatchString(trimmed)
-	}
-	return claim.MatchString(trimmed)
+// commentedExtensions says which of the extensions this rule PARSES can carry a
+// generated claim at all.
+//
+// Markdown's only comment is the HTML one, and it renders as nothing. A `.txt`
+// or extensionless document is shown to a reader verbatim by every viewer there
+// is, so `<!-- @generated -->` in one is a line the reader simply SEES — and
+// accepting it there would accept the identical line in a hand-written file,
+// which is the one-line, audit-trail-free opt-out this whole file exists to
+// close. Both answers are written down: an extension absent from a table is a
+// decision nobody made, and this table decides who may silence the rule.
+var commentedExtensions = map[extension]bool{
+	markdownExt:      true,
+	markdownLongExt:  true,
+	plainTextExt:     false,
+	extensionlessExt: false,
+	// The two markup spellings are judged by NAME alone and are never parsed,
+	// so this question never reaches them. They answer anyway: a table keyed by
+	// this type that skipped a member would leave the next reader unable to tell
+	// an omission from a decision, which is the failure every table in this
+	// package is written against.
+	restructuredExt: false,
+	asciidocExt:     false,
 }
+
+// declaresGenerated reports one top-level block that IS a generator's claim.
+//
+// Three things hold together, and each closes a way in: the block is an HTML
+// comment (a paragraph saying the same words is text a reader sees), it begins
+// within the header (a document quoting the convention halfway down is
+// describing it), and the words lie INSIDE the comment's delimiters.
+func (d document) declaresGenerated(node ast.Node) bool {
+	block, isComment := d.commentBlock(node)
+	if !isComment {
+		return false
+	}
+	if d.lineOf(block.Lines().At(0)) > generatedHeader {
+		return false
+	}
+	return generatedClaim.Match(commentInterior(d.commentText(block)))
+}
+
+// commentBlock is the node read as an HTML comment, reporting whether it is one.
+func (d document) commentBlock(node ast.Node) (*ast.HTMLBlock, bool) {
+	block, isHTML := node.(*ast.HTMLBlock)
+	if !isHTML || block.Lines().Len() == 0 {
+		return nil, false
+	}
+	return block, invisibleBlocks[block.HTMLBlockType]
+}
+
+// invisibleBlocks says which of CommonMark's seven HTML block types render as
+// nothing at all. One does; the other six are named here rather than left to a
+// comparison — a type absent from the table is a decision nobody wrote down, and
+// this table is what stands between an invisible claim and a visible one
+// anybody can type.
+var invisibleBlocks = map[ast.HTMLBlockType]bool{
+	// 2 is the comment, and it is the whole exemption.
+	ast.HTMLBlockType2: true,
+	// 1 is <script>/<pre>/<style>, 3 is <?…?>, 4 is a <!DECLARATION>, 5 is
+	// <![CDATA[…]]>, 6 is a known block tag and 7 any other tag. Each renders
+	// as markup a reader sees or as content inside it.
+	ast.HTMLBlockType1: false,
+	ast.HTMLBlockType3: false,
+	ast.HTMLBlockType4: false,
+	ast.HTMLBlockType5: false,
+	ast.HTMLBlockType6: false,
+	ast.HTMLBlockType7: false,
+}
+
+// commentText is a comment block's whole text, INCLUDING the line that closes
+// it.
+//
+// Goldmark keeps the closing line in `ClosureLine` rather than in `Lines()`, and
+// a generator writing a multi-line header routinely puts the claim there:
+// `<!--` on one line and `Code generated by gen-docs. DO NOT EDIT. -->` on the
+// next. Reading only `Lines()` reported that genuinely generated document as
+// hand-maintained, and told its author to stop editing by hand a file nobody
+// edits.
+func (d document) commentText(block *ast.HTMLBlock) []byte {
+	body := block.Lines().Value(d.source)
+	if block.ClosureLine.Start < 0 {
+		// An unterminated comment has no closing line; its text is the block.
+		return body
+	}
+	closing := d.textOf(block.ClosureLine)
+	whole := make([]byte, 0, len(body)+len(closing))
+	return append(append(whole, body...), closing...)
+}
+
+// commentInterior is the text BETWEEN a comment's delimiters, which is the only
+// part of an HTML comment a reader does not see.
+//
+// A CommonMark type-2 block ends at the line holding `-->`, and the REST of that
+// line belongs to the block — so `<!-- x --> @generated` and
+// `<!-- --><span title="@generated">` are both HTML comment blocks carrying the
+// words outside the comment, where a reader sees them. Matching the block's
+// whole text accepted both, and each was a one-line opt-out from every finding
+// in the file.
+//
+// The opener needs no branch of its own: a type-2 block begins with it by
+// definition, and when [bytes.Cut] finds none there is no interior to search.
+func commentInterior(text []byte) []byte {
+	_, inside, _ := bytes.Cut(text, []byte(commentOpen))
+	if closed := bytes.Index(inside, []byte(commentClose)); closed >= 0 {
+		return inside[:closed]
+	}
+	// An unterminated comment runs to the end of the block, and everything in
+	// it is still inside the comment.
+	return inside
+}
+
+// The delimiters of the one construct markdown renders as nothing at all.
+const (
+	commentOpen  = "<!--"
+	commentClose = "-->"
+)

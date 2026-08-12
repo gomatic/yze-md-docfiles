@@ -76,11 +76,11 @@ func TestGeneratedMarkersExemptADocumentsSections(t *testing.T) {
 	}
 }
 
-// TestOnlyTheHeaderIsSearchedForAGeneratedMarker pins the other direction, and
-// it is the one that matters most here: a document ABOUT the generated-code
-// convention says "DO NOT EDIT" in its prose, and exempting on that would let
-// any author opt out by writing three words anywhere in the file.
-func TestOnlyTheHeaderIsSearchedForAGeneratedMarker(t *testing.T) {
+// TestProseBelowTheHeaderExemptsNothing pins the direction that matters most
+// here: a document ABOUT the generated-code convention says "DO NOT EDIT" in
+// its prose, and exempting on that would let any author opt out by writing
+// three words anywhere in the file.
+func TestProseBelowTheHeaderExemptsNothing(t *testing.T) {
 	t.Parallel()
 
 	body := "# Standards\n\nline\nline\nline\nline\n\nGenerated files carry DO NOT EDIT.\n\n## Changelog\n"
@@ -240,13 +240,43 @@ func TestChangelogFileNameIsUnambiguousInEverySpelling(t *testing.T) {
 	assert.Empty(t, analyze(t, "docs/changelog policy.md", ""), "and a document ABOUT one is still kept")
 }
 
-// repeated is a run of one character, for building an underline or a delimiter.
-func repeated(of string, times int) string {
-	run := ""
-	for range times {
-		run += of
+// TestADotlessNameIsReadAsMarkdown pins the grammar the extensionless spelling
+// gets, which is a decision and not a default. `CHANGELOG` or `NOTES` with no
+// extension is a markdown document by convention — it is what a repository
+// writes — and reading it as anything else makes its comment syntax a different
+// one, so a heading hidden inside a comment becomes visible.
+func TestADotlessNameIsReadAsMarkdown(t *testing.T) {
+	t.Parallel()
+
+	commented := "# Docs\n\n<!--\n## Changelog\n-->\n\n## Recent Changes\n"
+
+	assert.Len(t, analyze(t, "docs/NOTES", commented), 1,
+		"the commented heading is hidden, and only the live one is reported")
+	assert.Len(t, analyze(t, "docs/NOTES.md", commented), 1,
+		"which is the same answer the explicit spelling gets")
+}
+
+// TestTheNameHalfReachesFormatsTheSectionHalfDoesNot pins the split that
+// goldmark forced, and the reason it is not symmetric. Judging a name reads no
+// bytes, so it covers every extension a changelog is spelled with — including
+// the two `yze/markup` bans outright, because exemptions in this fleet are
+// PER-RULE and a repository that legitimately earns a markup exemption would
+// otherwise become the one place a `CHANGELOG.adoc` is invisible. Judging a
+// section needs a parse, and this rule parses markdown.
+func TestTheNameHalfReachesFormatsTheSectionHalfDoesNot(t *testing.T) {
+	t.Parallel()
+
+	for _, named := range []string{"CHANGELOG.rst", "CHANGELOG.adoc"} {
+		diags := analyze(t, "docs/"+named, "Changelog\n=========\n\n- 1.0\n")
+
+		require.Len(t, diags, 1, "%s is still banned by its name", named)
+		assert.Contains(t, diags[0].Message, "must not be committed")
 	}
-	return run
+
+	for _, other := range []string{"guide.rst", "guide.adoc"} {
+		assert.Empty(t, analyze(t, "docs/"+other, "Changelog\n=========\n\n- 1.0\n"),
+			"%s is not parsed for sections, and `yze/markup` bans the file itself", other)
+	}
 }
 
 // TestTheFileFindingNamesTheFileNotItsPath pins what the message says. The path

@@ -39,6 +39,22 @@
 // is banned as a file name, where it is unambiguous, and left alone as a
 // heading. A rule that fires on any of those is a rule its own repository
 // cannot document itself under.
+//
+// # THE TWO HALVES READ DIFFERENT SETS OF FILES
+//
+// The name half judges a path and reads nothing, so it applies to every
+// extension a changelog is spelled with — [nameExtensions] — including `.rst`
+// and `.adoc`, which the `yze/markup` rule bans outright. Dropping them because
+// another rule forbids the format would open a hole reachable through a
+// SANCTIONED exemption: exemptions in this fleet are per-rule, so a repository
+// that earns a legitimate `yze/markup` exemption would become a place where a
+// `CHANGELOG.adoc` is invisible to this one.
+//
+// The section half needs a parse, so it applies only to what this rule parses —
+// [sectionExtensions], which is markdown and the two spellings read as markdown.
+// The capability given up is a changelog SECTION inside a reStructuredText or
+// AsciiDoc document; measured over the fleet, that protects no file, in formats
+// that must not exist here at all.
 package docfiles
 
 import (
@@ -109,18 +125,44 @@ const fileMessage = "%s must not be committed to a repository, whoever or whatev
 const headingMessage = "the %q section is a changelog inside another document; " +
 	"git history already records this, and the copy is the one that goes stale"
 
-// prose is the set of extensions a changelog is written in. A changelog is
-// prose; `changelog.go` is code that manages the concept rather than an
-// instance of it, and reporting it would be reporting the cure as the disease.
-// The empty extension is here for the canonical Unix spelling, a bare
+// nameExtensions is the set of extensions in which a file's NAME is judged. A
+// changelog is prose; `changelog.go` is code that manages the concept rather
+// than an instance of it, and reporting it would be reporting the cure as the
+// disease. The empty extension is here for the canonical Unix spelling, a bare
 // `CHANGELOG` with no extension at all.
-var prose = map[extension]bool{
+//
+// `.rst` and `.adoc` stay here even though `yze/markup` bans both formats
+// outright, because that rule can be exempted per repository and this one is a
+// different rule: dropping them would make a `CHANGELOG.adoc` invisible in
+// just the repositories likely to hold one.
+var nameExtensions = map[extension]bool{
 	extensionlessExt: true,
 	markdownExt:      true,
 	markdownLongExt:  true,
 	plainTextExt:     true,
 	restructuredExt:  true,
 	asciidocExt:      true,
+}
+
+// sectionExtensions is the set this rule PARSES, and so the set whose headings
+// it reads. Every admitted member is read as markdown, which is a decision
+// rather than a default: `.txt` and the extensionless spelling are what a
+// repository writes a bare `CHANGELOG` or `NOTES` in, and markdown is the only
+// prose grammar this fleet has.
+//
+// The two markup spellings are refused rather than omitted. There is no
+// CommonMark reading of a reStructuredText document that means anything, and
+// `yze/markup` bans the file itself — so the only capability given up is a
+// changelog SECTION inside one, which the fleet measurement says protects no
+// file. Writing the refusal down is what lets the next reader tell it from an
+// oversight.
+var sectionExtensions = map[extension]bool{
+	extensionlessExt: true,
+	markdownExt:      true,
+	markdownLongExt:  true,
+	plainTextExt:     true,
+	restructuredExt:  false,
+	asciidocExt:      false,
 }
 
 // extension is a file's suffix, lower-cased.
@@ -176,12 +218,10 @@ func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCoun
 		return nil, 0, ErrNotText.With(nil, "path", string(at))
 	}
 	base, ext := nameAndExtension(at)
-	// Stripped ONCE, here, so every reader below sees the same text. The
-	// heading scan stripped it and the generated-claim scan did not, so a
-	// generated file written with a byte order mark — which is how a Windows
-	// editor saves one — had its claim hidden behind an invisible character on
-	// exactly the line the claim has to be on.
-	family := markupOf(ext)
+	// Stripped ONCE, here, before the parse, so every reader below sees the same
+	// text. A byte order mark ahead of `<!--` makes the line a paragraph rather
+	// than an HTML comment — which is how a Windows editor silently exempts a
+	// document from the claim its generator really did write.
 	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
 	// The FILE finding is raised BEFORE the generated claim is even read, and
 	// nothing exempts it. A changelog is banned because it EXISTS in the
@@ -190,17 +230,18 @@ func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCoun
 	// release-please, git-cliff and goreleaser all open their CHANGELOG.md with
 	// one.
 	diags := fileDiagnostics(at, base, ext)
-	if !prose[ext] {
+	if !sectionExtensions[ext] {
 		return diags, findingCount(len(diags)), nil
 	}
-	if isGenerated(text, family, ext) {
+	doc := parse(text)
+	if isGenerated(doc, ext) {
 		// Only the SECTIONS are out of scope. A generated document cannot be
 		// fixed by editing it, so a machine-written docs page carrying four
 		// hundred `## Unreleased` headings is one problem in its generator, and
 		// reporting four hundred findings buries it.
 		return diags, findingCount(len(diags)), nil
 	}
-	headings, total := headingDiagnostics(at, text, family)
+	headings, total := headingDiagnostics(at, doc)
 	// Counted BEFORE the notice is appended. The truncation notice is this
 	// analyzer's own bookkeeping, not something the document contains, and
 	// counting it inflated the run total by one per truncated document.
@@ -220,7 +261,7 @@ func nameAndExtension(at Path) (baseName, extension) {
 
 // fileDiagnostics reports the file when its name is a changelog.
 func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
-	if !prose[ext] {
+	if !nameExtensions[ext] {
 		return nil
 	}
 	stem := strings.TrimSuffix(strings.ToLower(string(base)), string(ext))

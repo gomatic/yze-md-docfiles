@@ -1,11 +1,16 @@
 package docfiles
 
+// The changelog SECTION: a heading, as the parser says it is one, whose title
+// names a changelog. What is and is not a heading belongs to the parse; what a
+// changelog is called belongs here.
+
 import (
 	"fmt"
 	"regexp"
 	"strings"
 
 	goyze "github.com/gomatic/go-yze"
+	"github.com/yuin/goldmark/ast"
 )
 
 // line is one physical line of a document, without its terminator.
@@ -14,12 +19,10 @@ type line string
 // lineNumber is a 1-based position in a document, as a diagnostic reports it.
 type lineNumber int
 
-// remaining is the not-yet-read tail of a document being streamed.
-type remaining string
-
 // byteOrderMark is the UTF-8 BOM some editors write. It precedes the first
-// character while being invisible in the text, so a heading check that does not
-// strip it silently exempts the first line of the file.
+// character while being invisible in the text, so a document opening with one
+// has its first line read as ordinary paragraph text — which silently exempts
+// whatever a generator wrote there.
 const byteOrderMark = "\ufeff"
 
 // changelogFileName is the file this rule bans, in the spellings it is written
@@ -40,138 +43,87 @@ var changelogTitle = regexp.MustCompile(
 	`^(?i)(change[-_ ]?log|recent changes|version history|release history|revision history|what'?s new|unreleased)$`,
 )
 
-// setextUnderline is the second line of markdown's two-line heading, where the
-// title sits on the line ABOVE. Markdown recognises two adornment characters
-// here; reStructuredText recognises many more, which is what [adornmentUnderline]
-// is for.
-var setextUnderline = regexp.MustCompile(`^ {0,3}(?:=+|-+)[ \t]*$`)
-
-// adornmentUnderline is reStructuredText's and AsciiDoc's equivalent. Their
-// section adornment is ANY repeated punctuation, not just markdown's two, so a
-// `Changelog` underlined with tildes or carets was invisible to a pattern that
-// only knew `=` and `-` — which is most of the RST headings anyone writes.
-var adornmentUnderline = regexp.MustCompile(`^ {0,3}(?:=+|-+|~+|\^+|"+|\++|#+|\*+|'+|` + "`+" + `|:+|\.+|_+)[ \t]*$`)
-
-// indentedCode is the indentation at which a line stops being markup and
-// becomes the literal contents of an indented code block: four spaces, or one
-// tab. A fence delimiter written there is TEXT, not a delimiter — and reading
-// one as a delimiter let two lines of an ordinary tutorial silence every
-// finding after them.
-const indentedCode = 4
-
-// isIndented reports any leading whitespace at all.
-func isIndented(text line) bool {
-	return strings.TrimLeft(string(text), " \t") != string(text)
-}
-
-// isIndentedCode reports a line indented far enough to be code rather than
-// markup.
-func isIndentedCode(text line) bool {
-	if strings.HasPrefix(string(text), "\t") {
-		return true
-	}
-	return len(string(text))-len(strings.TrimLeft(string(text), " ")) >= indentedCode
-}
-
-// headingDiagnostics reports the headings that open a changelog section, and
-// how many there were.
+// headingDiagnostics reports the headings that open a changelog section, and how
+// many there were.
 //
-// It stops COLLECTING at the limit rather than collecting everything and
-// truncating afterwards. Truncating afterwards bounded the report and not the
-// work: eight megabytes of legal prose, every line a banned heading, still
-// built every diagnostic — 524 MB resident — before discarding all but a
-// thousand of them, which is the cost the limit exists to avoid.
-func headingDiagnostics(at Path, source Source, family markup) ([]goyze.Diagnostic, findingCount) {
-	var diags []goyze.Diagnostic
-	total := findingCount(0)
-	state := scanner{markup: family}
-	// The byte order mark is already gone: [Diagnostics] strips it once, for
-	// every reader, because two readers stripping it separately is how one of
-	// them came to forget.
-	text := remaining(source)
-	current, text, ok := nextLine(text)
-	for number := lineNumber(1); ok; number++ {
-		upcoming, tail, hasNext := nextLine(text)
-		text = tail
-		var found bool
-		state, diags, found = state.read(at, family, current, upcoming, number, diags)
-		if found {
-			total++
-		}
-		current, ok = upcoming, hasNext
-	}
-	return diags, total
+// The count is the TRUE one and the slice is not: collecting stops at the
+// per-document limit while counting continues, so a document holding ten
+// thousand banned headings costs a thousand diagnostics rather than ten
+// thousand, and still names how many it really held.
+func headingDiagnostics(at Path, doc document) ([]goyze.Diagnostic, findingCount) {
+	found := sections{}.walk(at, doc, doc.root)
+	return found.diags, found.total
 }
 
-// read advances the scanner over one line and collects the finding it opens, if
-// any. It stops APPENDING at the limit while still reporting that it found one,
-// so the count stays true without the cost: collecting everything and
-// truncating afterwards bounded the report and not the work.
-func (s scanner) read(
-	at Path,
-	family markup,
-	current, upcoming line,
-	number lineNumber,
-	diags []goyze.Diagnostic,
-) (scanner, []goyze.Diagnostic, bool) {
-	next, isProse := s.step(current)
-	if !isProse {
-		return next, diags, false
-	}
-	title, found := heading(family, current, upcoming)
-	if !found {
-		return next, diags, false
-	}
-	if findingCount(len(diags)) < findingLimit {
-		diags = append(diags, diagnostic(at, number, headingFinding(title)))
-	}
-	return next, diags, true
+// sections is what a walk has found so far: the diagnostics it kept, and how
+// many banned headings it saw.
+type sections struct {
+	diags []goyze.Diagnostic
+	total findingCount
 }
 
-// nextLine cuts the next line off text, normalising the carriage return a
-// Windows editor leaves behind and reporting whether there was one.
+// walk descends the block tree, collecting the headings that open a changelog
+// section, in source order.
 //
-// The document is STREAMED rather than split into a slice of lines. Splitting
-// allocated a string header per line and then a second slice of the same size,
-// which cost roughly thirty-six times the file: a 38 MB document of newlines
-// drove 1.4 GB resident. A document is read once, in order, with one line of
-// lookahead — nothing here needs them all at once.
-func nextLine(text remaining) (line, remaining, bool) {
-	if text == "" {
-		return "", "", false
+// The accumulator is threaded through the recursion rather than each level
+// returning its own slice, because appending a subtree's result at every level
+// re-copies it once per level of nesting — quadratic for a document that nests
+// linearly, which is a cost a checked-in file controls.
+func (s sections) walk(at Path, doc document, node ast.Node) sections {
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		s = s.opened(at, doc, child).walk(at, doc, child)
 	}
-	one, rest, _ := strings.Cut(string(text), "\n")
-	return line(strings.TrimSuffix(one, "\r")), remaining(rest), true
+	return s
 }
 
-// heading is the changelog title a line opens, if it opens one. Both written
-// forms are read: the marker-run heading, and the two-line form whose title
-// sits above its underline.
+// opened is s with this node's finding added, when the node is a heading that
+// opens a changelog section.
+func (s sections) opened(at Path, doc document, node ast.Node) sections {
+	heading, isHeading := node.(*ast.Heading)
+	if !isHeading {
+		return s
+	}
+	title, opens := doc.changelogSection(heading)
+	if !opens {
+		return s
+	}
+	s.total++
+	if findingCount(len(s.diags)) < findingLimit {
+		s.diags = append(s.diags, diagnostic(at, doc.lineOf(heading.Lines().At(0)), headingFinding(title)))
+	}
+	return s
+}
+
+// changelogSection is the title a heading opens, and whether that title names a
+// changelog.
 //
-// The marker-run form is tried FIRST. `# Changelog` followed by a run of equals
-// signs is both — an ATX heading, and a line with an underline beneath it — and
-// reading it as the second yields the title `# Changelog`, which matches no
-// vocabulary and reports nothing.
-func heading(family markup, text, following line) (line, bool) {
-	if pattern, ok := family.heading(); ok {
-		if found := pattern.FindStringSubmatch(string(text)); found != nil {
-			return matched(line(found[1]))
-		}
+// The title is read from the SOURCE rather than assembled from the parsed
+// inline text, because the message must name what an author can search their own
+// document for: `## [Unreleased]` is reported with its brackets, which is what
+// they typed.
+//
+// A heading whose text does not stand on a SINGLE line is not read at all, and
+// that covers two shapes with one condition. A heading with no text —
+// `##` alone — has no title to name. A heading whose title is WRAPPED across
+// lines is a heading no spelling in this vocabulary is written in: Keep a
+// Changelog, release-please, git-cliff and every hand-typed `## Changelog` put
+// it on one line, and a wrapped one is already a finding of the `yze/hardwrap`
+// rule in this same suite. Reading it here would either quote a title spanning
+// lines the finding does not point at, or quote its first line alone — and
+// `Changelog` above `of Doom` is not a changelog section.
+func (d document) changelogSection(heading *ast.Heading) (line, bool) {
+	if heading.Lines().Len() != 1 {
+		return "", false
 	}
-	if family.underlines(following) {
-		return matched(text)
-	}
-	return "", false
+	return matched(line(d.textOf(heading.Lines().At(0))))
 }
 
 // matched reports a title when it names a changelog, trimmed.
 //
-// The trim is NOT redundant with the patterns that produce the title, which was
-// the previous claim here and was wrong: the marker-run pattern consumes only
-// spaces and tabs, so a heading ending in a vertical tab or a non-breaking
-// space kept it and stopped matching, while the same title in the two-line form
-// was reported. One character silenced the rule, and the two written forms
-// disagreed about the same words.
+// The trim is the rule's own, not the parser's: goldmark strips the spaces and
+// tabs CommonMark says a heading's text ends at, and leaves everything else — so
+// a heading ending in a vertical tab or a non-breaking space keeps it, and the
+// vocabulary saw a title nobody typed.
 func matched(title line) (line, bool) {
 	trimmed := line(strings.TrimSpace(string(title)))
 	return trimmed, changelogTitle.MatchString(string(unbracketed(unlinked(trimmed))))

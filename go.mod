@@ -6,6 +6,7 @@ require (
 	github.com/gomatic/go-error v0.3.15
 	github.com/gomatic/go-yze v0.12.4
 	github.com/stretchr/testify v1.11.1
+	github.com/yuin/goldmark v1.8.5
 )
 
 require (
