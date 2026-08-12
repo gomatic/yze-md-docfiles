@@ -77,21 +77,39 @@ func isGenerated(doc document, ext extension) bool {
 var commentedExtensions = map[extension]bool{
 	markdownExt:      true,
 	markdownLongExt:  true,
-	plainTextExt:     false,
-	extensionlessExt: false,
+	markdownDownExt:  true,
+	markdownWnExt:    true,
+	markdownMkdExt:   true,
+	markdownMkdnExt:  true,
+	markdownMkdownXt: true,
 	// MDX has no HTML comment. `<!-- -->` is not valid JSX, so a claim written
 	// that way in an `.mdx` file is a syntax error a reader's build shows them
 	// rather than an invisible statement of authorship — and accepting it would
 	// be accepting a line nobody can hide behind.
 	markdownJSXExt: false,
-	// The markup spellings are judged by NAME alone and are never parsed, so
-	// this question never reaches them. They answer anyway: a table keyed by
-	// this type that skipped a member would leave the next reader unable to tell
-	// an omission from a decision, which is the failure every table in this
-	// package is written against.
+	// Plain text and the extensionless spelling are shown to a reader verbatim,
+	// so every spelling of the claim is a line the reader simply SEES.
+	plainTextExt:     false,
+	extensionlessExt: false,
+	// The rest are judged by NAME alone and are never parsed, so this question
+	// never reaches them. They answer anyway: a table keyed by this type that
+	// skipped a member would leave the next reader unable to tell an omission
+	// from a decision, which is the failure every table in this package is
+	// written against.
 	restructuredExt: false,
 	asciidocExt:     false,
 	asciidocLongExt: false,
+	textileExt:      false,
+	mediawikiExt:    false,
+	wikiExt:         false,
+	creoleExt:       false,
+	podExt:          false,
+	rdocExt:         false,
+	orgModeExt:      false,
+	htmlExt:         false,
+	htmlLongExt:     false,
+	latexExt:        false,
+	plainDocExt:     false,
 }
 
 // declaresGenerated reports one top-level block that IS a generator's claim.
@@ -169,10 +187,24 @@ func (d document) commentText(block *ast.HTMLBlock) []byte {
 // whole text accepted both, and each was a one-line opt-out from every finding
 // in the file.
 //
+// An ABRUPTLY CLOSED comment has no interior at all. `<!-->` and `<!--->` end
+// the comment right there — the HTML parser's abrupt-closing-of-empty-comment
+// rule — while CommonMark still opens a type-2 block on the `<!--` and ends it
+// on the `-->` at the other end of the line. So `<!--> @generated -->` is an
+// HTML comment block whose visible text reads ` @generated -->`, and cutting on
+// the first opener and the first closer found those words "inside" a comment
+// nobody could see. Another one-line, audit-trail-free opt-out from every
+// finding in the file, found by an adversarial review.
+//
 // The opener needs no branch of its own: a type-2 block begins with it by
 // definition, and when [bytes.Cut] finds none there is no interior to search.
 func commentInterior(text []byte) []byte {
 	_, inside, _ := bytes.Cut(text, []byte(commentOpen))
+	for _, abrupt := range abruptClosers {
+		if bytes.HasPrefix(inside, []byte(abrupt)) {
+			return nil
+		}
+	}
 	if closed := bytes.Index(inside, []byte(commentClose)); closed >= 0 {
 		return inside[:closed]
 	}
@@ -180,6 +212,10 @@ func commentInterior(text []byte) []byte {
 	// it is still inside the comment.
 	return inside
 }
+
+// abruptClosers are what may follow `<!--` and close the comment immediately,
+// leaving the rest of the line as text a reader sees.
+var abruptClosers = []string{">", "->"}
 
 // The delimiters of the one construct markdown renders as nothing at all.
 const (

@@ -78,5 +78,13 @@ func truncation(at Path, found findingCount) goyze.Diagnostic {
 const reportLimit = 10_000
 
 // runTruncationMessage formats the finding that stands for the rest of a run.
-const runTruncationMessage = "%d changelog findings across this run, of which %d are reported; findings from %s " +
-	"onward are omitted, because a tree with this many is one problem rather than that many"
+//
+// The second number is what the report CARRIES, not the limit. They are not the
+// same: a document past its own limit contributes a truncation notice, which is
+// a diagnostic the report carries and is not one of the findings the run
+// counted — so a run of eleven such documents said "10000 are reported" over
+// 9991 findings and nine notices. Naming a constant where a measurement belongs
+// is the same defect this file's own counters were repaired for, in the sentence
+// that reports them.
+const runTruncationMessage = "%d changelog findings across this run, of which %d diagnostics are carried; " +
+	"findings from %s onward are omitted, because a tree with this many is one problem rather than that many"

@@ -275,3 +275,22 @@ func TestAnInlineCommentDelimiterDoesNotSilenceTheDocument(t *testing.T) {
 	assert.Empty(t, analyze(t, "README.md", "<!--\n## Changelog\n-->\n\nEnd.\n"),
 		"while a comment BLOCK really does hide what it holds")
 }
+
+// TestALinkReferenceDefinitionDoesNotHideTheHeadingBelowIt pins a gap the block
+// parser had for one commit. A link reference definition is lifted out of its
+// paragraph by a PARAGRAPH TRANSFORMER, and the parser was assembled without
+// them — so `[semver]: https://semver.org/` sitting above a setext heading left
+// the definition inside the paragraph, the heading's text spanned two lines, and
+// the finding was discarded. One ordinary line of link definitions above a
+// `Changelog` heading silenced it. Found by an adversarial review.
+func TestALinkReferenceDefinitionDoesNotHideTheHeadingBelowIt(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"one definition": "[x]: /y\nChangelog\n=========\n",
+		"two definitions": "[keep-a-changelog]: https://keepachangelog.com/\n" +
+			"[semver]: https://semver.org/\nWhat's New\n----------\n",
+	} {
+		assert.Len(t, analyze(t, "README.md", source), 1, "%s: the heading below it is a heading", name)
+	}
+}

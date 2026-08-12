@@ -62,11 +62,14 @@ func TestReasonIsTheCauseOrUnopenableWhenThereIsNone(t *testing.T) {
 func TestRunTruncationAlwaysCarriesAPath(t *testing.T) {
 	t.Parallel()
 
-	diag := runTruncation("docs/CHANGELOG.md", 12_345)
+	diag := runTruncation("docs/CHANGELOG.md", 12_345, 9_991)
 
 	assert.Equal(t, "docs/CHANGELOG.md", diag.Path)
 	assert.Equal(t, Rule, diag.Rule)
 	assert.Contains(t, diag.Message, "12345")
+	assert.Contains(t, diag.Message, "9991 diagnostics are carried",
+		"what the report CARRIES, not the limit — a run past its bound carries truncation notices too, "+
+			"and naming the constant said 10000 over a report holding 9991 findings and nine notices")
 	assert.Contains(t, diag.Message, "docs/CHANGELOG.md")
 }
 

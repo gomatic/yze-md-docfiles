@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	docfiles "github.com/gomatic/yze-md-docfiles"
 )
@@ -48,7 +47,7 @@ func TestADecorationThatIsAWordNamesADifferentDocument(t *testing.T) {
 }
 
 // TestTheDotfileSpellingIsStillTheFile pins the leading dot, which is not an
-// extension however [path.Ext] reads it: `.changelog.md` is a changelog whose
+// extension however [filepath.Ext] reads it: `.changelog.md` is a changelog whose
 // extension is `.md`, and a bare `.changelog` has none at all. Reading the dot
 // as part of the extension gave the dotfile spelling of the ban a suffix no
 // table had heard of, and it went out silently.
@@ -64,41 +63,31 @@ func TestTheDotfileSpellingIsStillTheFile(t *testing.T) {
 	}
 }
 
-// TestAChangelogKeptAsADirectoryIsReported pins the shape the file half could
-// not see, because it judged only a path's final element. Kubernetes keeps
-// `CHANGELOG/CHANGELOG-1.29.md` and a Hugo site keeps `changelog/index.md`; the
-// file inside is innocently named and the directory around it is the changelog.
-func TestAChangelogKeptAsADirectoryIsReported(t *testing.T) {
+// TestAChangelogKeptAsADirectoryIsNotReported pins a candidate that was
+// ADMITTED for one commit and is refused, and this is the regression test for
+// the refusal rather than an inspection.
+//
+// A directory named `changelog` holding `index.md` really is a changelog, and
+// judging the parent element reported it. It also reported every file in a
+// repository whose OWN root directory is called `changelog` — its README, its
+// LICENSE, its docs — and the answer depended on how the root was spelled on the
+// command line: `docfiles /src/changelog` gave three findings and `cd
+// /src/changelog && docfiles .` gave none, because `.` has no parent element to
+// read. A gate whose answer depends on the shape of its argument cannot be
+// baselined. Found by an adversarial review; zero such directories exist in the
+// fleet, so the refusal costs nothing measured.
+func TestAChangelogKeptAsADirectoryIsNotReported(t *testing.T) {
 	t.Parallel()
 
 	for _, at := range []string{
-		"changelog/index.md", "CHANGELOG/CHANGELOG-1.29.md", "content/changelog/2024.md",
+		"changelog/index.md", "CHANGELOG/notes.md", "content/changelog/2024.md",
 		"docs/Release Notes/january.md", "changes/_index.md",
 	} {
-		diags := analyze(t, at, "")
-
-		require.Len(t, diags, 1, "%s sits in a changelog directory", at)
-		assert.Equal(t, 1, diags[0].Line)
+		assert.Empty(t, analyze(t, at, ""), "%s is judged by its own name, not its parent's", at)
 	}
 
-	for _, at := range []string{
-		"changelogs/index.md", "docs/index.md", "changelog-policy/index.md", "index.md",
-	} {
-		assert.Empty(t, analyze(t, at, ""), "%s does not", at)
-	}
-}
-
-// TestADirectoryFindingNamesTheDirectory pins what the message says, because
-// the file's own name is innocent: an author told that `index.md` must not be
-// committed has no idea what to do about it.
-func TestADirectoryFindingNamesTheDirectory(t *testing.T) {
-	t.Parallel()
-
-	diags := analyze(t, "content/changelog/index.md", "")
-
-	require.Len(t, diags, 1)
-	assert.Contains(t, diags[0].Message, "index.md sits in the changelog directory")
-	assert.Contains(t, diags[0].Message, "kept as a directory")
+	assert.Len(t, analyze(t, "CHANGELOG/CHANGELOG-1.29.md", ""), 1,
+		"while the file inside that really is named one is still reported, once")
 }
 
 // TestTheDocusaurusAndAsciidocSpellingsAreJudged pins the two extensions that
@@ -180,4 +169,76 @@ func TestTheWalkClaimsEverySpellingTheRuleJudges(t *testing.T) {
 	} {
 		assert.False(t, docfiles.Claims(docfiles.Path(at)), "%s is not", at)
 	}
+}
+
+// TestEverySpellingOfMarkdownIsJudged pins the extensions an adversarial review
+// found sitting in neither the admitted list nor the refused one. GitHub renders
+// `.mkd`, `.mdown`, `.mdwn`, `.mkdn` and `.mkdown` as markdown, so each is a
+// changelog spelled the way its author's editor spells it — and the reasoning
+// that admitted `.mdx` at zero fleet instances applies to each of them verbatim.
+func TestEverySpellingOfMarkdownIsJudged(t *testing.T) {
+	t.Parallel()
+
+	for _, ext := range []string{".mkd", ".mkdn", ".mkdown", ".mdown", ".mdwn"} {
+		assert.Len(t, analyze(t, "docs/CHANGELOG"+ext, ""), 1, "CHANGELOG%s is a changelog file", ext)
+		assert.Len(t, analyze(t, "docs/guide"+ext, "## Changelog\n"), 1, "and %s is read as markdown", ext)
+	}
+}
+
+// TestABannedMarkupSpellingIsStillJudgedByName pins the second derivation rule.
+// `yze/markup` bans these formats outright, and exemptions in this fleet are
+// PER-RULE — so a repository holding a sanctioned markup exemption must not
+// become the one place a `CHANGELOG.textile` is invisible to the changelog ban.
+// `.rst` and `.adoc` were here for that reason and the rest of the banned set was
+// not, which is the same gap wearing seven more suffixes.
+func TestABannedMarkupSpellingIsStillJudgedByName(t *testing.T) {
+	t.Parallel()
+
+	for _, ext := range []string{".textile", ".mediawiki", ".wiki", ".creole", ".pod", ".rdoc", ".org"} {
+		assert.Len(t, analyze(t, "docs/CHANGELOG"+ext, "## Changelog\n"), 1,
+			"CHANGELOG%s is banned by name, and its contents are not parsed", ext)
+		assert.Empty(t, analyze(t, "docs/guide"+ext, "## Changelog\n"),
+			"while %s is not read as markdown, exactly as .adoc is not", ext)
+	}
+}
+
+// TestTheRefusedExtensionsAreStillRefused pins the other half of that decision.
+// `.html` is rendered output rather than authored prose, `.tex` is a typesetting
+// system markdown does not replace, and `.text` is plain text under a name
+// nothing agrees is prose. Each is recorded as a refusal, so each has to stay
+// unreported or the record is a paragraph nothing enforces.
+func TestTheRefusedExtensionsAreStillRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, ext := range []string{".html", ".htm", ".tex", ".text"} {
+		assert.Empty(t, analyze(t, "docs/CHANGELOG"+ext, "## Changelog\n"),
+			"CHANGELOG%s is refused by name and unparsed", ext)
+	}
+}
+
+// TestAnInvisibleCharacterNeverSilencesAHeading pins the repair for a
+// one-character opt-out. Unicode's format characters render as nothing, so a
+// heading carrying one shows a reader exactly `Changelog` — while the vocabulary,
+// matched against the raw source text, saw a word it had never heard of. A zero
+// width space, a soft hyphen, a byte order mark mid-line and a left-to-right
+// mark each silenced the rule completely. Found by an adversarial review; it is
+// the same defect as the vertical tab this rule was already repaired for, in
+// characters nobody can see at all.
+func TestAnInvisibleCharacterNeverSilencesAHeading(t *testing.T) {
+	t.Parallel()
+
+	for name, heading := range map[string]string{
+		"zero width space": "## Changelog\u200b",
+		"byte order mark":  "## \ufeffChangelog",
+		"soft hyphen":      "## Change\u00adlog",
+		"left-to-right":    "## Changelog\u200e",
+		"word joiner":      "## Change\u2060log",
+		"zero width join":  "## Change\u200dlog",
+	} {
+		assert.Len(t, analyze(t, "README.md", heading+"\n"), 1,
+			"%s renders as nothing, so the reader sees a changelog", name)
+	}
+
+	assert.Empty(t, analyze(t, "README.md", "## Chàngelog\n"),
+		"while a character a reader CAN see is a different word, and combining marks stay")
 }

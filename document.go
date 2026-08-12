@@ -27,15 +27,17 @@ import (
 // block-parser table for every file in a fleet-wide walk.
 var markdown = blockParser()
 
-// blockParser assembles CommonMark's BLOCK grammar, and nothing else: no inline
-// parsers and no extensions.
+// blockParser assembles CommonMark's BLOCK grammar: its block parsers and the
+// paragraph transformers that finish the job. No inline parsers, and no
+// extensions.
 //
-// Neither omission loses a finding. This rule reads a heading's text from the
+// Neither omission loses a heading. This rule takes a heading's text from the
 // SOURCE, so an inline tree would be built for nobody to consult; and the
 // extensions a sibling analyzer enables — GFM, footnotes, definition lists —
 // reshape what a PARAGRAPH is rather than what a heading is. Measured
 // 2026-08-12 over 38 written forms: heading detection is identical with and
-// without them, in every one.
+// without them, in every one. What taking the SOURCE text does cost is stated in
+// the package doc, under the limitations, and it is not nothing.
 //
 // The inline parsers are absent for a second reason, and it is a bound rather
 // than an economy. Goldmark's code-span parser is superlinear in the number of
@@ -43,11 +45,27 @@ var markdown = blockParser()
 // the full parser and 5 milliseconds through this one, and eight megabytes — a
 // size [SizeLimit] deliberately admits — takes 40 milliseconds here. That is the
 // same 39-seconds-per-megabyte disaster this package once repaired by hand in
-// its own code-span scanner, reintroduced verbatim by the library, and
-// declining to build the inline tree is what keeps it out. The regression tests
-// that guarded the hand-rolled version now guard this choice.
+// its own code-span scanner, reintroduced verbatim by the library, and the
+// regression tests that guarded the hand-rolled version now guard this choice.
+//
+// IT IS NOT THE WHOLE BOUND, and an earlier version of this comment said it was.
+// Goldmark's BLOCK grammar is quadratic in container nesting depth, which no
+// choice here reaches: 400 KB of `>` takes 50 seconds and a megabyte takes 5m42s
+// at 721 MB resident, so a checked-in file well under [SizeLimit] can still cost
+// hours. That is an open defect against the parse itself and it is written down
+// in the package doc rather than left in a claim nothing stands behind.
 func blockParser() parser.Parser {
-	return parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...))
+	return parser.NewParser(
+		parser.WithBlockParsers(parser.DefaultBlockParsers()...),
+		// The paragraph transformers are part of the BLOCK grammar, however they
+		// are packaged: the one in the default set lifts link reference
+		// definitions out of the paragraph they were read into. Omitting them
+		// left `[x]: /y` sitting inside the paragraph above a setext underline,
+		// so the heading's text spanned two lines and was discarded — one
+		// ordinary line of link definitions above a `Changelog` heading silenced
+		// it. Found by an adversarial review.
+		parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
+	)
 }
 
 // document is one parsed document: the bytes that were parsed, the block tree

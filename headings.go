@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	goyze "github.com/gomatic/go-yze"
 	"github.com/yuin/goldmark/ast"
@@ -115,9 +116,39 @@ func (d document) changelogSection(heading *ast.Heading) (line, bool) {
 // tabs CommonMark says a heading's text ends at, and leaves everything else — so
 // a heading ending in a vertical tab or a non-breaking space keeps it, and the
 // vocabulary saw a title nobody typed.
+//
+// The REPORTED title is the trimmed source text, because that is what an author
+// can search their own document for; only the form the vocabulary is matched
+// against is normalised further.
 func matched(title line) (line, bool) {
 	trimmed := line(strings.TrimSpace(string(title)))
-	return trimmed, changelogTitle.MatchString(string(unbracketed(unlinked(trimmed))))
+	return trimmed, changelogTitle.MatchString(string(unbracketed(unlinked(visible(trimmed)))))
+}
+
+// visible is a title with the characters a reader cannot see removed, trimmed
+// again afterwards because removing them can leave ordinary space behind.
+//
+// Unicode's FORMAT characters render as nothing at all, so a heading carrying
+// one is a heading whose words are exactly what a reader sees — and a single
+// invisible character was a one-character opt-out from the rule: `## Changelog`
+// with a zero width space after it, a soft hyphen inside it, or a byte order
+// mark in front of it (which is stripped only at offset zero, where a
+// document's own BOM lives) all rendered as `Changelog` and matched nothing.
+// That is the same defect as the vertical tab this function was already
+// repaired for, in characters nobody can see at all. Found by an adversarial
+// review.
+//
+// Combining marks are deliberately NOT removed. A variation selector is
+// invisible too, but it sits in the same Unicode category as the accents real
+// titles are written with, and stripping those would rewrite a title into
+// something its author never typed.
+func visible(title line) line {
+	return line(strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, string(title))))
 }
 
 // unlinked is a title with a surrounding markdown link's target removed:

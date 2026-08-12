@@ -9,7 +9,7 @@ package docfiles
 
 import (
 	"fmt"
-	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -84,11 +84,22 @@ func onSight(tables ...map[extension]bool) map[extension]bool {
 //
 // A leading dot belongs to the NAME rather than to an extension: `.changelog.md`
 // is a changelog whose extension is `.md`, and a bare `.changelog` has none at
-// all. [path.Ext] answers `.changelog` for the second, which would give the
+// all. [filepath.Ext] answers `.changelog` for the second, which would give the
 // dotfile spelling of the ban an extension no table has ever heard of.
+//
+// It is [filepath], not [path], and on the platform this is written on the two
+// behave alike — which is how the difference went unnoticed for as long as it
+// did.
+// The walk uses [filepath.WalkDir], so on Windows every path arrives
+// backslash-separated, where `path.Base` returns the WHOLE path unchanged: the
+// stem of `C:\repo\CHANGELOG.md` came out as `c:\repo\changelog`, matched
+// nothing, and the whole name half of this rule went silent on a platform
+// `.goreleaser.yaml` builds for. Found by an adversarial review, which is the
+// only thing that could find it — no test on this machine can tell the two
+// packages apart.
 func nameAndExtension(at Path) (baseName, extension) {
-	base := path.Base(string(at))
-	return baseName(base), extension(folded(pathPart(path.Ext(strings.TrimPrefix(base, ".")))))
+	base := filepath.Base(string(at))
+	return baseName(base), extension(folded(pathPart(filepath.Ext(strings.TrimPrefix(base, ".")))))
 }
 
 // stemOf is a name with its extension and any leading dot removed, case-folded.
@@ -127,29 +138,18 @@ func folded(raw pathPart) pathPart {
 	}, string(raw)))
 }
 
-// isChangelogPath reports a path whose NAME says it is a changelog — its own, or
-// the directory it sits in.
-func isChangelogPath(at Path, base baseName, ext extension) bool {
+// isChangelogPath reports a path whose NAME says it is a changelog.
+//
+// It judges the final element and NOTHING ABOVE IT. A changelog kept as a
+// DIRECTORY — `changelog/index.md`, Kubernetes' `CHANGELOG/CHANGELOG-1.29.md` —
+// was admitted here for one commit and is refused; the reason is recorded in the
+// package doc, and it is a false positive an adversarial review demonstrated
+// rather than an argument.
+func isChangelogPath(_ Path, base baseName, ext extension) bool {
 	if !nameExtensions[ext] {
 		return false
 	}
-	return changelogFileName.MatchString(string(stemOf(base, ext))) || isChangelogDirectory(at)
-}
-
-// isChangelogDirectory reports a path whose PARENT directory is a changelog.
-//
-// A changelog kept as a DIRECTORY — `changelog/index.md`, or Kubernetes'
-// `CHANGELOG/CHANGELOG-1.29.md` — is the same second source of truth wearing a
-// different shape, and the file half judging only the final element could not
-// see it. Measured 2026-08-12: the fleet holds no directory by any of these
-// names, so this admits a spelling rather than reporting one.
-//
-// Every prose file inside such a directory is reported, one finding each, rather
-// than the directory once. A finding carries a path, and there is no path here a
-// reader can open that is not a file — while naming only the index would leave
-// the twenty dated fragments beside it unmentioned.
-func isChangelogDirectory(at Path) bool {
-	return changelogFileName.MatchString(string(folded(pathPart(path.Base(path.Dir(string(at)))))))
+	return changelogFileName.MatchString(string(stemOf(base, ext)))
 }
 
 // nameFindings is everything this rule can say about a path knowing only its
@@ -167,14 +167,10 @@ func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
 	if !isChangelogPath(at, base, ext) {
 		return nil
 	}
-	return []goyze.Diagnostic{diagnostic(at, 1, nameFinding(at, base))}
+	return []goyze.Diagnostic{diagnostic(at, 1, nameFinding(base))}
 }
 
-// nameFinding is the message for one banned name, which says what is wrong with
-// THIS path: the file itself, or the directory holding it.
-func nameFinding(at Path, base baseName) finding {
-	if isChangelogDirectory(at) {
-		return finding(fmt.Sprintf(directoryMessage, base, path.Base(path.Dir(string(at)))))
-	}
+// nameFinding is the message for one banned name.
+func nameFinding(base baseName) finding {
 	return finding(fmt.Sprintf(fileMessage, base))
 }

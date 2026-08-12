@@ -141,7 +141,7 @@ func TestReportLimitBoundsTheRunAndNeverLosesTheCount(t *testing.T) {
 	assert.LessOrEqual(t, len(report.Diagnostics), 10_001, "the run is bounded, not just each document")
 	last := report.Diagnostics[len(report.Diagnostics)-1]
 	assert.Contains(t, last.Message, "15000 changelog findings across this run")
-	assert.Contains(t, last.Message, "10000 are reported")
+	assert.Contains(t, last.Message, "10000 diagnostics are carried")
 }
 
 // TestARunUnderTheLimitIsReportedInFull pins the other side, so the bound never

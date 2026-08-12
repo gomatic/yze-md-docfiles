@@ -153,7 +153,8 @@ func (r run) add(at Path, found []goyze.Diagnostic, held findingCount) run {
 // accounts for anything the limit dropped.
 func (r run) report() goyze.Report {
 	if r.truncatedAt != "" {
-		r.diagnostics = append(r.diagnostics, runTruncation(r.truncatedAt, r.total))
+		r.diagnostics = append(r.diagnostics,
+			runTruncation(r.truncatedAt, r.total, findingCount(len(r.diagnostics))))
 	}
 	return goyze.Report{Diagnostics: r.diagnostics}
 }
@@ -186,8 +187,8 @@ func sectionFindings(read FileReader, file Path) ([]goyze.Diagnostic, findingCou
 // baseline or ratchet — the same objection that made an anonymous rule id
 // invalid — and this one has a truthful path available: the document whose
 // findings were the first to be dropped.
-func runTruncation(at Path, found findingCount) goyze.Diagnostic {
-	return diagnostic(at, 1, finding(fmt.Sprintf(runTruncationMessage, found, reportLimit, at)))
+func runTruncation(at Path, found, carried findingCount) goyze.Diagnostic {
+	return diagnostic(at, 1, finding(fmt.Sprintf(runTruncationMessage, found, carried, at)))
 }
 
 // unreadable is the finding for a document the analyzer could not read: one the
