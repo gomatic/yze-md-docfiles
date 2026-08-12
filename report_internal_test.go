@@ -23,6 +23,22 @@ func TestFileFindingsContainsAReadFailureToItsOwnFile(t *testing.T) {
 	assert.Contains(t, found[0].Message, "cannot be analyzed as a document")
 }
 
+// TestAnUnreadableChangelogCountsBothOfItsFindings pins the arithmetic behind
+// the guard ordering. The run's reported total is the TRUE number of findings,
+// so a file that cannot be opened AND must not exist contributes two — and a
+// counter that still returned one would quietly under-report every such file in
+// the very sentence that claims to name the true count.
+func TestAnUnreadableChangelogCountsBothOfItsFindings(t *testing.T) {
+	t.Parallel()
+
+	found, held := fileFindings(func(string) ([]byte, error) { return nil, os.ErrPermission }, "docs/CHANGELOG.md")
+
+	require.Len(t, found, 2)
+	assert.Equal(t, findingCount(2), held, "the ban and the read failure are two findings, not one")
+	assert.Contains(t, found[0].Message, "must not be committed")
+	assert.Contains(t, found[1].Message, "cannot be analyzed as a document")
+}
+
 // TestReasonIsTheCauseOrUnopenableWhenThereIsNone names both arms of reason,
 // which its doc comment claims are each reached, and the constant the first arm
 // returns. Only one of them had anything behind it:

@@ -1,11 +1,13 @@
 package docfiles_test
 
-// What a report carries when there is too much of it, and where a finding about
-// a whole file points. Every boundary here was reachable by an off-by-one, and
-// every whole-file line number was unasserted.
+// What a report carries when there is too much of it or when it could not be
+// read at all, and where a finding about a whole file points. Every boundary
+// here was reachable by an off-by-one, and every whole-file line number was
+// unasserted.
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -175,4 +177,78 @@ func TestTheRunTruncationNoticeNamesTheFirstLineToo(t *testing.T) {
 	last := report.Diagnostics[len(report.Diagnostics)-1]
 	require.Contains(t, last.Message, "onward are omitted")
 	assert.Equal(t, 1, last.Line)
+}
+
+// TestAnUnreadableChangelogStillSaysItMustNotExist pins the guard ordering,
+// which is a contract rather than a reorder. The size and text guards describe a
+// file's CONTENTS and were deciding a rule that depends only on its NAME, so an
+// oversized or undecodable `CHANGELOG.md` was told the analyzer could not read
+// it — true, unhelpful, and about the wrong problem. Both are said now: the ban
+// AND the tool failure, because a file the gate could not read is still a fact
+// worth reporting.
+func TestAnUnreadableChangelogStillSaysItMustNotExist(t *testing.T) {
+	t.Parallel()
+
+	for name, unreadable := range map[string]struct {
+		wantErr error
+		source  string
+	}{
+		"too large":       {docfiles.ErrTooLarge, strings.Repeat("x", int(docfiles.SizeLimit)+1)},
+		"not utf-8":       {docfiles.ErrNotText, "\xff\xfe not text \xff"},
+		"not utf-8 alone": {docfiles.ErrNotText, "\xff"},
+	} {
+		diags, err := docfiles.Diagnostics("docs/CHANGELOG.md", docfiles.Source(unreadable.source))
+
+		require.ErrorIs(t, err, unreadable.wantErr, "%s: the failure is still raised", name)
+		require.Len(t, diags, 1, "%s: and the ban is still stated", name)
+		assert.Equal(t, 1, diags[0].Line, "%s: at the document's first line", name)
+		assert.Contains(t, diags[0].Message, "CHANGELOG.md must not be committed", name)
+	}
+}
+
+// TestAnInnocentUnreadableDocumentInventsNothing pins the other half of that
+// contract, and it is the half a careless reorder breaks: nothing was read, so
+// nothing about the document's CONTENTS can have been determined. A file whose
+// name is nobody's changelog yields the tool failure and not one finding more.
+func TestAnInnocentUnreadableDocumentInventsNothing(t *testing.T) {
+	t.Parallel()
+
+	for name, unreadable := range map[string]struct {
+		wantErr error
+		source  string
+	}{
+		"too large": {docfiles.ErrTooLarge, strings.Repeat("## Changelog\n", int(docfiles.SizeLimit)/13+1)},
+		"not utf-8": {docfiles.ErrNotText, "## Changelog\n\xff\xfe"},
+	} {
+		diags, err := docfiles.Diagnostics("docs/notes.md", docfiles.Source(unreadable.source))
+
+		require.ErrorIs(t, err, unreadable.wantErr, name)
+		assert.Empty(t, diags, "%s: a document nobody read has no sections anybody can name", name)
+	}
+}
+
+// TestAChangelogNameOutlivesEveryReaderThatCouldNotOpenIt pins the same contract
+// at the two entry points that never see a byte at all: the reader refusing a
+// file, and the walk handing back a path it could not enter. Each of those is
+// still the gate saying that path EXISTS, and a `CHANGELOG.md` behind a broken
+// symlink or a permission error is a changelog in the repository.
+func TestAChangelogNameOutlivesEveryReaderThatCouldNotOpenIt(t *testing.T) {
+	t.Parallel()
+
+	report := docfiles.Report(func(string) ([]byte, error) { return nil, os.ErrPermission },
+		[]string{"docs/CHANGELOG.md", "docs/notes.md"})
+
+	require.Len(t, report.Diagnostics, 3, "the ban, its unreadable finding, and the innocent file's")
+	assert.Contains(t, report.Diagnostics[0].Message, "must not be committed", "the ban comes first")
+	assert.Contains(t, report.Diagnostics[1].Message, "cannot be analyzed as a document")
+	assert.Equal(t, "docs/notes.md", report.Diagnostics[2].Path)
+	assert.NotContains(t, report.Diagnostics[2].Message, "must not be committed",
+		"and an innocent file nobody could open earns no ban")
+
+	walked := docfiles.Unreadable([]string{"docs/CHANGELOG.md", "docs/locked"})
+
+	require.Len(t, walked, 3)
+	assert.Contains(t, walked[0].Message, "must not be committed")
+	assert.Contains(t, walked[1].Message, "cannot be analyzed as a document")
+	assert.Equal(t, "docs/locked", walked[2].Path)
 }

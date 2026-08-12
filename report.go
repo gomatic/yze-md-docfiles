@@ -58,9 +58,15 @@ const ErrNoPaths errs.Const = "no paths to analyze"
 // a device, a link resolving to nothing. Both are REPORTED rather than skipped,
 // because a path the gate cannot open is where an unchecked one would hide, and
 // the run still yields every other file's findings.
+//
+// What the path's NAME says is reported alongside, and first. The walk handing
+// back a path it could not open is still the walk saying that path EXISTS, so a
+// `CHANGELOG.md` behind a broken symlink is a changelog in the repository — and
+// saying only that it could not be read would answer a question nobody asked.
 func Unreadable(paths []string) []goyze.Diagnostic {
 	diags := make([]goyze.Diagnostic, 0, len(paths))
 	for _, path := range paths {
+		diags = append(diags, nameFindings(Path(path))...)
 		diags = append(diags, unreadable(Path(path), nil))
 	}
 	return diags
@@ -113,7 +119,11 @@ func Report(read FileReader, files []string) goyze.Report {
 func fileFindings(read FileReader, file Path) ([]goyze.Diagnostic, findingCount) {
 	data, err := read(string(file))
 	if err != nil {
-		return []goyze.Diagnostic{unreadable(file, err)}, 1
+		// The name is still knowable: the reader refusing a file says nothing
+		// about what it is called, and a locked `CHANGELOG.md` must not exist
+		// whether or not anybody can open it.
+		named := nameFindings(file)
+		return append(named, unreadable(file, err)), findingCount(len(named)) + 1
 	}
 	return documentDiagnostics(file, Source(data))
 }
@@ -156,10 +166,17 @@ func reason(cause error) string {
 
 // documentDiagnostics is one document's findings, with an unreadable document
 // reported as a finding of its own rather than raised as the whole run's error.
+//
+// The unreadable finding is APPENDED to whatever the rule could already say,
+// rather than substituted for it. [countedDiagnostics] decides the file's name
+// before it looks at a byte, so a `CHANGELOG.md` too large or too malformed to
+// parse arrives here carrying its ban, and dropping that on the floor would
+// leave an author told to investigate a reading problem instead of to delete a
+// file.
 func documentDiagnostics(file Path, source Source) ([]goyze.Diagnostic, findingCount) {
 	diags, held, err := countedDiagnostics(file, source)
 	if err != nil {
-		return []goyze.Diagnostic{unreadable(file, err)}, 1
+		return append(diags, unreadable(file, err)), held + 1
 	}
 	return diags, held
 }

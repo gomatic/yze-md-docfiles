@@ -16,6 +16,13 @@ import (
 //   - Diagnostics never panics, on any path or content.
 //   - Every diagnostic carries this rule's identity and a navigable 1-based
 //     position, and its line never points past the document.
+//   - A TOOL FAILURE yields only what the path's NAME earns. This used to say
+//     "no findings at all", and that was the defect: a name is knowable with
+//     zero bytes read, so an oversized or undecodable `CHANGELOG.md` reported
+//     that the analyzer could not read it rather than that it must not exist.
+//     The property that survives is the one that matters — a document nobody
+//     read never yields a finding about its CONTENTS, so nothing is invented for
+//     it.
 //   - A heading finding names a line that really is in the source, which is the
 //     property that keeps the rule from inventing sections.
 //
@@ -40,6 +47,8 @@ func FuzzDiagnostics(f *testing.F) {
 		f.Add("README.md", seed)
 	}
 	f.Add("CHANGELOG.md", "")
+	f.Add("CHANGELOG.md", "\xff\xfe")
+	f.Add("notes.md", "\xff\xfe")
 	f.Add("changelog.go", "## Changelog\n")
 	// The families disagree about what a heading is, so each is seeded in its
 	// own spelling and in the others' — a pattern shared between them was wrong
@@ -54,12 +63,6 @@ func FuzzDiagnostics(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, path, source string) {
 		diags, err := docfiles.Diagnostics(docfiles.Path(path), docfiles.Source(source))
-		if err != nil {
-			if len(diags) != 0 {
-				t.Fatalf("a tool failure yields no findings, got %d", len(diags))
-			}
-			return
-		}
 
 		lines := strings.Split(strings.TrimPrefix(source, "\ufeff"), "\n")
 		for _, d := range diags {
@@ -71,6 +74,15 @@ func FuzzDiagnostics(f *testing.F) {
 			}
 			if d.Severity != goyze.SeverityError {
 				t.Fatalf("every finding here is an error, got %q", d.Severity)
+			}
+			if err != nil {
+				// Nothing was read, so nothing about the CONTENTS can have been
+				// determined — every finding here must be the one the path's own
+				// name earns, at the line a whole-file finding addresses.
+				if !strings.Contains(d.Message, "must not be committed") || d.Line != 1 {
+					t.Fatalf("a tool failure yields only name findings, got %q at line %d", d.Message, d.Line)
+				}
+				continue
 			}
 			// A heading finding must point at a line that exists and really is
 			// the heading it quotes; only the file finding may sit at line 1 of

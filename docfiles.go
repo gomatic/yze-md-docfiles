@@ -55,6 +55,30 @@
 // The capability given up is a changelog SECTION inside a reStructuredText or
 // AsciiDoc document; measured over the fleet, that protects no file, in formats
 // that must not exist here at all.
+//
+// # A NAME OUTLIVES EVERY REASON THE BYTES COULD NOT BE READ
+//
+// A file that cannot be read is reported as a tool failure — [ErrTooLarge] for
+// one past [SizeLimit], [ErrNotText] for one whose bytes are not text, and the
+// reader's own error for one nobody could open. None of those suppresses what
+// the rule already knows.
+//
+// A tool failure once meant NO findings, on the reasoning that an analyzer which
+// read nothing has nothing to say. That reasoning holds for a section and fails
+// for a name: an oversized `CHANGELOG.md` was told the analyzer could not read
+// it, when what needed saying is that it must not exist. The size and text
+// guards describe a file's CONTENTS, and they were deciding a rule that depends
+// only on its NAME.
+//
+// So the contract is that BOTH are said. An unreadable document yields the
+// findings its name earns — never any others, because nothing else was
+// determined — together with the error, and every reader of this package
+// composes them the same way: the name findings first, then the one that says
+// the file could not be read. [Report] counts both, so a run's total is still
+// the true one. Nothing is passed over in silence, which is the outcome a gate
+// must never produce, and nothing is invented for a file nobody read either — an
+// innocent oversized document still yields exactly one finding, the unreadable
+// one.
 package docfiles
 
 import (
@@ -63,29 +87,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	errs "github.com/gomatic/go-error"
 	goyze "github.com/gomatic/go-yze"
 )
-
-// ErrTooLarge reports a file past the size this rule will read. It IS the shared
-// sentinel, not a second one beside it: the bound is enforced in two places —
-// here, and at the one place the command reads a file — and two sentinels for
-// one condition meant `errors.Is` answered false for whichever layer the caller
-// had not thought of.
-const ErrTooLarge = goyze.ErrTooLarge
-
-// SizeLimit is the largest document read, in bytes. It is exported so the
-// command can refuse a file from its directory entry, BEFORE opening it —
-// asking afterwards cost the file's own size twice over for a rule that then
-// declined to apply. It is generous by three
-// orders of magnitude over any real document, so it bounds the pathological
-// case without ever turning away prose.
-const SizeLimit goyze.ByteCount = 8 << 20
-
-// ErrNotText reports a document whose bytes are not text. A binary file cannot
-// be read as prose, and guessing at its lines would invent findings from
-// whatever byte happened to look like a `#`.
-const ErrNotText errs.Const = "document is not valid UTF-8 text"
 
 // Name is the analyzer's stable identifier — the suffix of its flat rule id and
 // the key the yze suite catalogs it under.
@@ -125,81 +128,23 @@ const fileMessage = "%s must not be committed to a repository, whoever or whatev
 const headingMessage = "the %q section is a changelog inside another document; " +
 	"git history already records this, and the copy is the one that goes stale"
 
-// nameExtensions is the set of extensions in which a file's NAME is judged. A
-// changelog is prose; `changelog.go` is code that manages the concept rather
-// than an instance of it, and reporting it would be reporting the cure as the
-// disease. The empty extension is here for the canonical Unix spelling, a bare
-// `CHANGELOG` with no extension at all.
-//
-// `.rst` and `.adoc` stay here even though `yze/markup` bans both formats
-// outright, because that rule can be exempted per repository and this one is a
-// different rule: dropping them would make a `CHANGELOG.adoc` invisible in
-// just the repositories likely to hold one.
-var nameExtensions = map[extension]bool{
-	extensionlessExt: true,
-	markdownExt:      true,
-	markdownLongExt:  true,
-	plainTextExt:     true,
-	restructuredExt:  true,
-	asciidocExt:      true,
-}
-
-// sectionExtensions is the set this rule PARSES, and so the set whose headings
-// it reads. Every admitted member is read as markdown, which is a decision
-// rather than a default: `.txt` and the extensionless spelling are what a
-// repository writes a bare `CHANGELOG` or `NOTES` in, and markdown is the only
-// prose grammar this fleet has.
-//
-// The two markup spellings are refused rather than omitted. There is no
-// CommonMark reading of a reStructuredText document that means anything, and
-// `yze/markup` bans the file itself — so the only capability given up is a
-// changelog SECTION inside one, which the fleet measurement says protects no
-// file. Writing the refusal down is what lets the next reader tell it from an
-// oversight.
-var sectionExtensions = map[extension]bool{
-	extensionlessExt: true,
-	markdownExt:      true,
-	markdownLongExt:  true,
-	plainTextExt:     true,
-	restructuredExt:  false,
-	asciidocExt:      false,
-}
-
-// extension is a file's suffix, lower-cased.
-type extension string
-
-// The prose extensions this rule reads, named once so the three places that
-// decide something per-format stay in step.
-const (
-	markdownExt      extension = ".md"
-	markdownLongExt  extension = ".markdown"
-	plainTextExt     extension = ".txt"
-	restructuredExt  extension = ".rst"
-	asciidocExt      extension = ".adoc"
-	extensionlessExt extension = ""
-)
-
 // baseName is a file's final path element.
 type baseName string
-
-// findingCount is how many findings a document produced.
-type findingCount int
-
-// findingLimit bounds how many findings ONE document contributes.
-//
-// Streaming the lines removed the amplification from the line slice and left it
-// in the diagnostic slice: eight megabytes of legal prose, every line a banned
-// heading, produced 230 MB of report and a gigabyte resident — and four such
-// files in one walk reached 4.7 GB. No author needs the ten-thousandth
-// instance to act, and a document with this many is one problem, not ten
-// thousand.
-const findingLimit findingCount = 1000
 
 // Diagnostics reports the changelog findings for one document: the file itself
 // when its name is a changelog, and every heading that opens one.
 //
-// A document that is not text yields [ErrNotText], so the caller surfaces a
-// tool failure rather than a clean pass over a file nobody read.
+// A document too large to read yields [ErrTooLarge] and one whose bytes are not
+// text yields [ErrNotText], so the caller surfaces a tool failure rather than a
+// clean pass over a file nobody read.
+//
+// AN ERROR AND FINDINGS ARRIVE TOGETHER, and that is the contract rather than an
+// oversight. What a document's NAME says is knowable from a directory entry, so
+// it survives every reason the bytes could not be read — an oversized
+// `CHANGELOG.md` that says only "the analyzer could not read this" tells its
+// author to go looking for a problem in a file whose problem is that it exists.
+// The error is not suppressed either: a file the gate could not read is still a
+// fact worth reporting, and both are said.
 func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 	diags, _, err := countedDiagnostics(at, source)
 	return diags, err
@@ -211,25 +156,29 @@ func Diagnostics(at Path, source Source) ([]goyze.Diagnostic, error) {
 // rather than the documents. It reported "11011 findings" over a tree holding
 // 16500, in the very sentence that says the true count is named.
 func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCount, error) {
+	base, ext := nameAndExtension(at)
+	// The NAME is decided FIRST, ahead of everything that reads a byte, and
+	// nothing below can take it back. It is raised before the generated claim,
+	// because a changelog is banned for EXISTING rather than for who typed it —
+	// and reading the claim first made the rule silent for exactly the files it
+	// most needs to catch, since release-please, git-cliff and goreleaser all
+	// open their CHANGELOG.md with one. It is raised before the size and text
+	// guards for the same reason one step further out: those describe the
+	// CONTENTS, and a name is knowable with zero bytes read, so letting them
+	// answer first told an author the analyzer had trouble reading a file whose
+	// whole problem is that it is there.
+	diags := fileDiagnostics(at, base, ext)
 	if goyze.ByteCount(len(source)) > SizeLimit {
-		return nil, 0, ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
+		return diags, findingCount(len(diags)), ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
 	}
 	if !utf8.ValidString(string(source)) {
-		return nil, 0, ErrNotText.With(nil, "path", string(at))
+		return diags, findingCount(len(diags)), ErrNotText.With(nil, "path", string(at))
 	}
-	base, ext := nameAndExtension(at)
 	// Stripped ONCE, here, before the parse, so every reader below sees the same
 	// text. A byte order mark ahead of `<!--` makes the line a paragraph rather
 	// than an HTML comment — which is how a Windows editor silently exempts a
 	// document from the claim its generator really did write.
 	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
-	// The FILE finding is raised BEFORE the generated claim is even read, and
-	// nothing exempts it. A changelog is banned because it EXISTS in the
-	// repository, not because of who typed it — and reading the claim first made
-	// the rule silent for exactly the files it most needs to catch, since
-	// release-please, git-cliff and goreleaser all open their CHANGELOG.md with
-	// one.
-	diags := fileDiagnostics(at, base, ext)
 	if !sectionExtensions[ext] {
 		return diags, findingCount(len(diags)), nil
 	}
@@ -271,16 +220,6 @@ func fileDiagnostics(at Path, base baseName, ext extension) []goyze.Diagnostic {
 	return []goyze.Diagnostic{diagnostic(at, 1, finding(fmt.Sprintf(fileMessage, base)))}
 }
 
-// truncationMessage formats the finding that stands for the ones not reported.
-const truncationMessage = "%d changelog findings in this document, of which %d are reported; a document with this " +
-	"many is one problem rather than that many, and reporting them all costs more memory than reading it did"
-
-// truncation is the finding that replaces everything past the limit, so the
-// count is never silently lost.
-func truncation(at Path, found findingCount) goyze.Diagnostic {
-	return diagnostic(at, 1, finding(fmt.Sprintf(truncationMessage, found, findingLimit)))
-}
-
 // diagnostic builds one finding at a line. Every finding of this rule addresses
 // a whole line — a file by its name, a section by its heading — so the column
 // is always the first, which is where an editor should land.
@@ -294,4 +233,14 @@ func diagnostic(at Path, line lineNumber, message finding) goyze.Diagnostic {
 		Severity: goyze.SeverityError,
 		Message:  string(message),
 	}
+}
+
+// nameFindings is everything this rule can say about a path knowing only its
+// name — which is every reader with no bytes to offer: the walk reporting a
+// path it could not enter, and the reader refusing a file it could not open.
+// One function serves all three callers, so the two byteless readers and the
+// ordinary read reach one conclusion about one name.
+func nameFindings(at Path) []goyze.Diagnostic {
+	base, ext := nameAndExtension(at)
+	return fileDiagnostics(at, base, ext)
 }
