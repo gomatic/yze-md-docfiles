@@ -73,7 +73,7 @@ func TestRunAcceptsExplicitFile(t *testing.T) {
 	buf := swapStdout(t)
 
 	require.Equal(t, 0, run([]string{file}))
-	assert.Contains(t, buf.String(), "hand-maintained changelog")
+	assert.Contains(t, buf.String(), "CHANGELOG.md must not be committed")
 }
 
 // TestRunFailsOnMissingPath pins that a path that does not exist is an error,

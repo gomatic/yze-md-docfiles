@@ -233,18 +233,18 @@ func TestATabIndentedLineIsLiteralContent(t *testing.T) {
 // TestAnIndentedCodeBlockShowsMarkupRatherThanMakingIt pins markdown's other
 // block model, which had none. Four spaces (or a tab) makes a code block —
 // CommonMark says so and goldmark renders `<pre><code>` — and every line inside
-// one was read as prose. That left the whole-document opt-out reachable by
-// indentation: a `CHANGELOG.md` beginning with four spaces and a generated claim
-// exempted itself, findings and file alike, which is the third door onto the
-// same opt-out this repo has had to close.
+// one was read as prose. That left the section opt-out reachable by
+// indentation: a document beginning with four spaces and a generated claim
+// exempted itself, which is the third door onto the same opt-out this repo has
+// had to close.
 func TestAnIndentedCodeBlockShowsMarkupRatherThanMakingIt(t *testing.T) {
 	t.Parallel()
 
-	assert.Len(t, analyze(t, "CHANGELOG.md", "    <!-- @generated -->\n# Changelog\n"), 2,
+	assert.Len(t, analyze(t, "api.md", "    <!-- @generated -->\n# Changelog\n"), 1,
 		"the claim is being shown in a code block, not made")
-	assert.Len(t, analyze(t, "CHANGELOG.md", "\t<!-- @generated -->\n# Changelog\n"), 2,
+	assert.Len(t, analyze(t, "api.md", "\t<!-- @generated -->\n# Changelog\n"), 1,
 		"and a tab opens the same block")
-	assert.Empty(t, analyze(t, "CHANGELOG.md", "<!-- @generated -->\n# Changelog\n"),
+	assert.Empty(t, analyze(t, "api.md", "<!-- @generated -->\n# Changelog\n"),
 		"while the same claim at the margin really does declare it")
 }
 

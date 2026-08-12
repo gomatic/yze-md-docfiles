@@ -1,9 +1,16 @@
 package docfiles
 
-// The generated-file exemption: the one way out of this rule, and so the one
-// place an evasion is worth the most. Every repair here closed a shape that
-// silenced a whole document — file finding included — by claiming an authorship
-// no generator had made.
+// The generated-claim exemption: the one way out of the HEADING half of this
+// rule, and so the one place an evasion is worth the most. Every repair here
+// closed a shape that silenced a document by claiming an authorship no
+// generator had made.
+//
+// It is the heading half ALONE. Each repair below is written against the day
+// this check also silenced the FILE finding, which is how a generated
+// `CHANGELOG.md` reported nothing at all; that finding now runs in front of
+// this one and no claim reaches it. The evasions are still worth closing —
+// a claim typed into a hand-written document still buries every section
+// finding in it — but none of them can hide the file any more.
 
 import (
 	"regexp"
@@ -11,9 +18,12 @@ import (
 )
 
 // generatedMarkers are the phrases a generator writes to say a file is its
-// output and not an author's. A document that is generated cannot be fixed by
-// editing it, so reporting one tells an author to change a file that will be
-// overwritten — the ratified rule is scoped to hand-maintained prose.
+// output and not an author's. A generated document cannot be fixed by editing
+// it, so reporting its SECTIONS tells an author to change lines that are
+// overwritten on the next run — and a machine-written page with four hundred of
+// them is one problem in its generator rather than four hundred findings. The
+// document's NAME is a different question, answered before this one: a
+// changelog file is banned for existing, and no generator's claim excuses it.
 //
 // The marker must be a GENERATOR'S claim of authorship, not merely a request
 // not to edit. A bare "DO NOT EDIT" was a one-line, audit-trail-free opt-out

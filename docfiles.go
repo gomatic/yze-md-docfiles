@@ -1,11 +1,28 @@
-// Package docfiles reports hand-maintained changelogs — the file, and the
-// section inside another document that is one by another name.
+// Package docfiles reports changelog FILES — and the section inside another
+// document that is one by another name.
 //
-// A changelog duplicates what git already records, attributed and immutable,
-// and the duplicate is the copy that rots: the file says one thing, `git log`
-// says another, and the reader has no way to tell which is stale. Release notes
-// generated from tags at release time carry the same information without the
-// second source of truth.
+// A changelog file does not belong in a repository, generated or not. It
+// duplicates what git already records, attributed and immutable, and the
+// duplicate is the copy that rots: the file says one thing, `git log` says
+// another, and the reader has no way to tell which is stale. Release notes are
+// cut from that history and belong to the tag and the release, where they are
+// written once and never edited again.
+//
+// GENERATED-NESS IS NOT AN EXEMPTION FROM THE FILE. It is a property of who
+// typed the document; the ban is on the document EXISTING. The file finding was
+// once suppressed by a generated claim, on the reasoning that telling a machine
+// to stop hand-maintaining its output is nonsense — which confused a badly
+// worded message with a reason, and made the exemption a door standing open in
+// exactly the shape the ban is most likely broken in: release-please, git-cliff
+// and goreleaser all write a `CHANGELOG.md` opening with `Code generated … DO
+// NOT EDIT.` or `@generated`, and the rule reported nothing at all for every one
+// of them.
+//
+// What the claim still exempts is the HEADING half, inside a document that is
+// not itself a changelog. A machine-written docs page carrying four hundred
+// `## Unreleased` headings is ONE problem, in its generator, and four hundred
+// findings bury it — and no author can act on them, because editing that file
+// is overwritten on the next run.
 //
 // The rule is deliberately NARROW, and every word of its vocabulary was
 // measured against the fleet before being admitted. It reports a file whose
@@ -78,8 +95,15 @@ type Source string
 type finding string
 
 // fileMessage formats a banned-file finding.
-const fileMessage = "%s is a hand-maintained changelog; git history is the changelog — " +
-	"tags and generated release notes carry the same information without a second source of truth to rot"
+//
+// It addresses BOTH authors, because both write this file. It once read "is a
+// hand-maintained changelog" and recommended generated release notes — a
+// sentence that says nothing to a generator and reads as an instruction to
+// switch tools rather than to delete a file. That wording was then mistaken for
+// a REASON, and the file finding was exempted for anything carrying a generated
+// claim. The message names the fault instead: the file is in the repository.
+const fileMessage = "%s must not be committed to a repository, whoever or whatever wrote it; " +
+	"git history is the changelog, and release notes belong to the tag and the release"
 
 // headingMessage formats a banned-section finding.
 const headingMessage = "the %q section is a changelog inside another document; " +
@@ -159,15 +183,21 @@ func countedDiagnostics(at Path, source Source) ([]goyze.Diagnostic, findingCoun
 	// exactly the line the claim has to be on.
 	family := markupOf(ext)
 	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
-	if isGenerated(text, family, ext) {
-		// A generated document is out of scope ENTIRELY, file and sections
-		// alike. Exempting only the sections reported a machine-written
-		// CHANGELOG.md as a hand-maintained changelog — recommending generated
-		// release notes to a file that already was one.
-		return nil, 0, nil
-	}
+	// The FILE finding is raised BEFORE the generated claim is even read, and
+	// nothing exempts it. A changelog is banned because it EXISTS in the
+	// repository, not because of who typed it — and reading the claim first made
+	// the rule silent for exactly the files it most needs to catch, since
+	// release-please, git-cliff and goreleaser all open their CHANGELOG.md with
+	// one.
 	diags := fileDiagnostics(at, base, ext)
 	if !prose[ext] {
+		return diags, findingCount(len(diags)), nil
+	}
+	if isGenerated(text, family, ext) {
+		// Only the SECTIONS are out of scope. A generated document cannot be
+		// fixed by editing it, so a machine-written docs page carrying four
+		// hundred `## Unreleased` headings is one problem in its generator, and
+		// reporting four hundred findings buries it.
 		return diags, findingCount(len(diags)), nil
 	}
 	headings, total := headingDiagnostics(at, text, family)

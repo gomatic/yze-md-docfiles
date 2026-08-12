@@ -1,6 +1,6 @@
-// Command yze-md-docfiles reports hand-maintained changelogs — the file, and
-// the section inside another document that is one by another name — emitting
-// the lean stickler-json report the stickler runner consumes.
+// Command yze-md-docfiles reports changelog files — the file, generated or
+// not, and the section inside another document that is one by another name —
+// emitting the lean stickler-json report the stickler runner consumes.
 package main
 
 import (
