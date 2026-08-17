@@ -7,4 +7,4 @@
 
 //go:build library_marker
 
-package docfiles_test
+package docfiles
